@@ -5,7 +5,7 @@
   terms of the Apache License, Version 2.0. A copy of the License can be
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
-// Primitive in-memory TLS client engine (mbedtls) for the C backend; see `std/async/os/tls`.
+// Primitive in-memory TLS client and server engine (mbedtls) for the C backend; see `std/async/os/tls`.
 module uv/tls
 
 // static linking order matters: tls, then x509, then crypto
@@ -22,7 +22,7 @@ extern import
   c  file "tls.c"
   js file "tls.js"
 
-pub extern tls-new( host : string, verify : bool ) : ioc any
+pub extern tls-new( host : string, verify : bool, ca : string ) : ioc any
   c  "kk_tls_new"
   js "kk_tls_new"
 
@@ -53,3 +53,16 @@ pub extern tls-write( t : any, data : bytes ) : ioc int
 pub extern tls-close-notify( t : any ) : ioc ()
   c  "kk_tls_close_notify"
   js "kk_tls_close_notify"
+
+// A server configuration (C: shared mbedtls configuration; Node.js: a secure context).
+pub extern tls-server-config-new( cert : string, key : string ) : ioc any
+  c  "kk_tls_server_config_new"
+  js "kk_tls_server_config_new"
+
+pub extern tls-server-config-error( conf : any ) : ioc string
+  c  "kk_tls_server_config_error"
+  js "kk_tls_server_config_error"
+
+pub extern tls-new-server( conf : any ) : ioc any
+  c  "kk_tls_new_server"
+  js "kk_tls_new_server"

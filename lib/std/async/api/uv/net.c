@@ -510,9 +510,18 @@ kk_unit_t kk_net_set_nodelay( kk_box_t bsock, bool enable, kk_context_t* ctx ) {
 }
 
 // TLS is implemented in Koka on top of the mbedtls engine for the C backend (see `tls.c`)
-kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, bool verify, kk_function_t cb, kk_context_t* ctx ) {
+kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, bool verify, kk_string_t ca, kk_function_t cb, kk_context_t* ctx ) {
   kk_unused(loop); kk_unused(port); kk_unused(verify);
   kk_string_drop(host, ctx);
+  kk_string_drop(ca, ctx);
+  kk_function_drop(cb, ctx);
+  return kk_error_from_uv_errno(UV_ENOTSUP, ctx);
+}
+
+kk_std_core_exn__error kk_net_tls_accept_setup( kk_uv_loop_t loop, kk_box_t sock, kk_box_t conf, kk_function_t cb, kk_context_t* ctx ) {
+  kk_unused(loop);
+  kk_box_drop(sock, ctx);
+  kk_box_drop(conf, ctx);
   kk_function_drop(cb, ctx);
   return kk_error_from_uv_errno(UV_ENOTSUP, ctx);
 }

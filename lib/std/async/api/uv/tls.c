@@ -6,7 +6,7 @@
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
 
-// A TLS client engine on mbedtls that works on in-memory buffers: the Koka
+// A TLS client and server engine on mbedtls that works on in-memory buffers: the Koka
 // side moves the encrypted bytes between the engine and a TCP socket
 // (`tls-feed` / `tls-take-output`), so no event loop integration is needed here.
 
@@ -17,7 +17,19 @@
 #include <mbedtls/ctr_drbg.h>
 #include <mbedtls/x509_crt.h>
 #include <mbedtls/error.h>
+#include <mbedtls/pk.h>
 #include <psa/crypto.h>
+
+// A server configuration (certificate chain and private key), shared by the
+// engines of all connections accepted with it.
+typedef struct kk_tls_conf_s {
+  mbedtls_ssl_config       conf;
+  mbedtls_x509_crt         cert;
+  mbedtls_pk_context       key;
+  mbedtls_entropy_context  entropy;
+  mbedtls_ctr_drbg_context drbg;
+  char     error[256];   // set if the configuration is invalid
+} kk_tls_conf_t;
 
 typedef struct kk_tls_s {
   mbedtls_ssl_context      ssl;
@@ -29,6 +41,8 @@ typedef struct kk_tls_s {
   uint8_t* out; size_t out_len; size_t out_cap;                  // ciphertext to send
   bool     eof;          // the transport reached end-of-stream
   char     error[256];   // last error message
+  bool     has_sconf;
+  kk_box_t sconf;        // the server configuration (server engines only); kept alive by this engine
 } kk_tls_t;
 
 static void kk_tls_buf_append( uint8_t** buf, size_t* len, size_t* cap, const uint8_t* data, size_t n ) {
@@ -61,11 +75,15 @@ static int kk_tls_bio_recv( void* p, unsigned char* buf, size_t len ) {
   return (int)n;
 }
 
-static void kk_tls_set_error( kk_tls_t* t, const char* what, int ret ) {
+static void kk_tls_format_error( char* buf, size_t size, const char* what, int ret ) {
   char msg[160];
   msg[0] = 0;
   if (ret != 0) mbedtls_strerror(ret, msg, sizeof(msg));
-  snprintf(t->error, sizeof(t->error), "%s%s%s", what, (msg[0] != 0 ? ": " : ""), msg);
+  snprintf(buf, size, "%s%s%s", what, (msg[0] != 0 ? ": " : ""), msg);
+}
+
+static void kk_tls_set_error( kk_tls_t* t, const char* what, int ret ) {
+  kk_tls_format_error(t->error, sizeof(t->error), what, ret);
 }
 
 // Load the system CA certificates; returns the number of files successfully loaded.
@@ -87,10 +105,11 @@ static int kk_tls_load_ca( kk_tls_t* t ) {
 }
 
 static void kk_tls_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
-  kk_unused(b); kk_unused(ctx);
+  kk_unused(b);
   kk_tls_t* t = (kk_tls_t*)p;
   if (t == NULL) return;
   mbedtls_ssl_free(&t->ssl);
+  if (t->has_sconf) kk_box_drop(t->sconf, ctx);   // after the ssl context that refers to it
   mbedtls_ssl_config_free(&t->conf);
   mbedtls_x509_crt_free(&t->ca);
   mbedtls_ctr_drbg_free(&t->drbg);
@@ -104,15 +123,23 @@ static kk_tls_t* kk_tls_unbox( kk_box_t b, kk_context_t* ctx ) {
   return (kk_tls_t*)kk_cptr_raw_unbox_borrowed(b, ctx);
 }
 
-// Create a TLS client for `host`. Check `kk_tls_error` for failures.
-kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_context_t* ctx ) {
+static kk_tls_t* kk_tls_alloc( kk_box_t* res, kk_context_t* ctx ) {
   kk_tls_t* t = (kk_tls_t*)calloc(1, sizeof(kk_tls_t));
   mbedtls_ssl_init(&t->ssl);
   mbedtls_ssl_config_init(&t->conf);
   mbedtls_x509_crt_init(&t->ca);
   mbedtls_ctr_drbg_init(&t->drbg);
   mbedtls_entropy_init(&t->entropy);
-  kk_box_t res = kk_cptr_raw_box(&kk_tls_free_fun, t, ctx);   // freed when the Koka value is dropped
+  *res = kk_cptr_raw_box(&kk_tls_free_fun, t, ctx);   // freed when the Koka value is dropped
+  return t;
+}
+
+// Create a TLS client for `host`. With `verify`, the server certificate is
+// checked against `ca` (PEM certificates) or, if `ca` is empty, the system CA
+// certificates. Check `kk_tls_error` for failures.
+kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_context_t* ctx ) {
+  kk_box_t res;
+  kk_tls_t* t = kk_tls_alloc(&res, ctx);
   int ret;
   psa_status_t st = psa_crypto_init();
   if (st != PSA_SUCCESS) { snprintf(t->error, sizeof(t->error), "unable to initialize the crypto library (%d)", (int)st); goto done; }
@@ -121,7 +148,15 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_context_t* ctx ) {
   ret = mbedtls_ssl_config_defaults(&t->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
   if (ret != 0) { kk_tls_set_error(t, "unable to configure TLS", ret); goto done; }
   mbedtls_ssl_conf_rng(&t->conf, mbedtls_ctr_drbg_random, &t->drbg);
-  if (verify) {
+  if (verify && kk_string_len_borrow(ca, ctx) > 0) {
+    kk_with_string_as_qutf8_borrow(ca, cca, ctx) {
+      ret = mbedtls_x509_crt_parse(&t->ca, (const unsigned char*)cca, strlen(cca) + 1);
+    }
+    if (ret != 0) { kk_tls_set_error(t, "invalid CA certificate", ret); goto done; }
+    mbedtls_ssl_conf_ca_chain(&t->conf, &t->ca, NULL);
+    mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+  }
+  else if (verify) {
     if (kk_tls_load_ca(t) == 0) {
       snprintf(t->error, sizeof(t->error), "no CA certificates found (set SSL_CERT_FILE to a certificate bundle)");
       goto done;
@@ -141,6 +176,78 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_context_t* ctx ) {
   mbedtls_ssl_set_bio(&t->ssl, t, &kk_tls_bio_send, &kk_tls_bio_recv, NULL);
 done:
   kk_string_drop(host, ctx);
+  kk_string_drop(ca, ctx);
+  return res;
+}
+
+// ---------------------------------------------------------------------------
+// Servers
+// ---------------------------------------------------------------------------
+
+static void kk_tls_conf_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
+  kk_unused(b); kk_unused(ctx);
+  kk_tls_conf_t* c = (kk_tls_conf_t*)p;
+  if (c == NULL) return;
+  mbedtls_ssl_config_free(&c->conf);
+  mbedtls_x509_crt_free(&c->cert);
+  mbedtls_pk_free(&c->key);
+  mbedtls_ctr_drbg_free(&c->drbg);
+  mbedtls_entropy_free(&c->entropy);
+  free(c);
+}
+
+// Create a server configuration from a PEM certificate chain (the server
+// certificate first) and a PEM private key. Check `kk_tls_server_config_error`.
+kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_context_t* ctx ) {
+  kk_tls_conf_t* c = (kk_tls_conf_t*)calloc(1, sizeof(kk_tls_conf_t));
+  mbedtls_ssl_config_init(&c->conf);
+  mbedtls_x509_crt_init(&c->cert);
+  mbedtls_pk_init(&c->key);
+  mbedtls_ctr_drbg_init(&c->drbg);
+  mbedtls_entropy_init(&c->entropy);
+  kk_box_t res = kk_cptr_raw_box(&kk_tls_conf_free_fun, c, ctx);
+  int ret = 0;
+  psa_status_t st = psa_crypto_init();
+  if (st != PSA_SUCCESS) { snprintf(c->error, sizeof(c->error), "unable to initialize the crypto library (%d)", (int)st); goto done; }
+  ret = mbedtls_ctr_drbg_seed(&c->drbg, mbedtls_entropy_func, &c->entropy, (const unsigned char*)"koka-tls-server", 15);
+  if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "unable to seed the random generator", ret); goto done; }
+  kk_with_string_as_qutf8_borrow(cert, ccert, ctx) {
+    ret = mbedtls_x509_crt_parse(&c->cert, (const unsigned char*)ccert, strlen(ccert) + 1);
+  }
+  if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid certificate", ret); goto done; }
+  kk_with_string_as_qutf8_borrow(key, ckey, ctx) {
+    ret = mbedtls_pk_parse_key(&c->key, (const unsigned char*)ckey, strlen(ckey) + 1, NULL, 0, mbedtls_ctr_drbg_random, &c->drbg);
+  }
+  if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid private key", ret); goto done; }
+  ret = mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
+  if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "unable to configure TLS", ret); goto done; }
+  mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
+  ret = mbedtls_ssl_conf_own_cert(&c->conf, &c->cert, &c->key);
+  if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "the private key does not fit the certificate", ret); goto done; }
+done:
+  kk_string_drop(cert, ctx);
+  kk_string_drop(key, ctx);
+  return res;
+}
+
+kk_string_t kk_tls_server_config_error( kk_box_t bc, kk_context_t* ctx ) {
+  kk_tls_conf_t* c = (kk_tls_conf_t*)kk_cptr_raw_unbox_borrowed(bc, ctx);
+  kk_string_t s = kk_string_alloc_from_utf8(c->error, ctx);
+  kk_box_drop(bc, ctx);
+  return s;
+}
+
+// Create a TLS server engine for one connection. Check `kk_tls_error` for failures.
+kk_box_t kk_tls_new_server( kk_box_t bc, kk_context_t* ctx ) {
+  kk_box_t res;
+  kk_tls_t* t = kk_tls_alloc(&res, ctx);
+  kk_tls_conf_t* c = (kk_tls_conf_t*)kk_cptr_raw_unbox_borrowed(bc, ctx);
+  t->sconf = bc;   // takes ownership
+  t->has_sconf = true;
+  if (c->error[0] != 0) { snprintf(t->error, sizeof(t->error), "%s", c->error); return res; }
+  int ret = mbedtls_ssl_setup(&t->ssl, &c->conf);
+  if (ret != 0) { kk_tls_set_error(t, "unable to set up TLS", ret); return res; }
+  mbedtls_ssl_set_bio(&t->ssl, t, &kk_tls_bio_send, &kk_tls_bio_recv, NULL);
   return res;
 }
 

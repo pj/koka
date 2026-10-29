@@ -52,6 +52,10 @@ abstract struct tcp-server( hnd : any )
 pub fun @unsafe-tcp-socket( h : any ) : tcp-socket
   Tcp-socket(h)
 
+// Internal: the primitive socket handle (used by `std/async/os/tls`).
+pub fun @unsafe-hnd( s : tcp-socket ) : any
+  s.hnd
+
 // Resolve a host name to a list of IP addresses (IPv4 and IPv6).
 pub fun resolve-host( host : string ) : <async,exn,net> list<string>
   with try-exn-prepend("resolve " ++ host.show)

@@ -1,0 +1,9 @@
+hello over tls
+True
+certificate rejected
+200 GET /hello 
+plain http failed
+200 POST /post data
+responses: 2, True, True
+True
+True

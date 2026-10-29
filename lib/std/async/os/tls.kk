@@ -6,12 +6,23 @@
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
 
-/* TLS client connections.
+/* TLS client and server connections.
 
    ```
    with s = tls-connect("example.com", 443)
    s.write-text("GET / HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n")
    println(s.read-all-text)
+   ```
+
+   A server accepts TCP connections as usual and then starts TLS on each:
+
+   ```
+   val config = tls-server-config(read-text-file("cert.pem".path), read-text-file("key.pem".path))
+   val server = tcp-listen("0.0.0.0", 8443)
+   server.serve fn(conn)
+     val s = conn.tls-accept(config)
+     s.write-text("hello over TLS\n")
+     s.close-notify
    ```
 
    On the C backend this uses mbedtls (with the system CA certificates, or the
@@ -46,16 +57,18 @@ pub fun plain-stream( s : tcp-socket ) : net-stream
 pub fun is-secure( s : net-stream ) : bool
   s.secure
 
-// Connect to `host` on `port` with TLS. With `verify=False` the server
-// certificate is not checked (only use this for testing).
-pub fun tls-connect( host : string, port : int = 443, verify : bool = True ) : <async,exn,net> net-stream
+// Connect to `host` on `port` with TLS. The server certificate is checked
+// against the system CA certificates, or only against `ca` (PEM
+// certificates) if it is given. With `verify=False` the server certificate is
+// not checked at all (only use this for testing).
+pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca : string = "" ) : <async,exn,net> net-stream
   with try-exn-prepend("tls connect to " ++ host ++ ":" ++ port.show)
   if net-has-native-tls() then
-    val h = await("tls-connect", fn(evloop, resume) net-tls-connect-setup(evloop, host, port.int32, verify, resume))
+    val h = await("tls-connect", fn(evloop, resume) net-tls-connect-setup(evloop, host, port.int32, verify, ca, resume))
     Net-stream(@unsafe-tcp-socket(h), Nothing, True)
   else
     val sock = tcp-connect(host, port)
-    val t = async-ioc { tls-new(host, verify) }
+    val t = async-ioc { tls-new(host, verify, ca) }
     val err = async-ioc { tls-error(t) }
     if !err.is-empty then
       sock.close
@@ -67,10 +80,37 @@ pub fun tls-connect( host : string, port : int = 443, verify : bool = True ) : <
       Ok -> Net-stream(sock, Just(t), True)
 
 // Connect, run `action` with the stream, and close it afterwards.
-pub fun scoped/tls-connect( host : string, port : int, action : net-stream -> <async,exn,net|e> a, verify : bool = True ) : <async,exn,net|e> a
-  val s = tls-connect(host, port, verify)
+pub fun scoped/tls-connect( host : string, port : int, action : net-stream -> <async,exn,net|e> a, verify : bool = True, ca : string = "" ) : <async,exn,net|e> a
+  val s = tls-connect(host, port, verify, ca)
   with finally { s.close }
   action(s)
+
+// A TLS server configuration: a certificate chain and its private key.
+abstract struct tls-config( hnd : any )
+
+// Create a server configuration from a PEM certificate chain (the server
+// certificate first, followed by any intermediate certificates) and a PEM
+// private key. Raises an exception if they are invalid or do not match.
+pub fun tls-server-config( cert-chain : string, private-key : string ) : <async,exn> tls-config
+  val c = async-ioc { tls-server-config-new(cert-chain, private-key) }
+  val err = async-ioc { tls-server-config-error(c) }
+  if !err.is-empty then throw("tls server config: " ++ err)
+  Tls-config(c)
+
+// Start TLS as the server on an accepted connection: performs the handshake
+// and returns the encrypted stream. The socket stays owned by the caller (and
+// must still be closed by it), also when the handshake fails.
+pub fun tls-accept( sock : tcp-socket, config : tls-config ) : <async,exn> net-stream
+  with try-exn-prepend("tls accept")
+  if net-has-native-tls() then
+    val h = await("tls-accept", fn(evloop, resume) net-tls-accept-setup(evloop, sock.@unsafe-hnd, config.hnd, resume))
+    Net-stream(@unsafe-tcp-socket(h), Nothing, True)
+  else
+    val t = async-ioc { tls-new-server(config.hnd) }
+    val err = async-ioc { tls-error(t) }
+    if !err.is-empty then throw(err)
+    handshake(sock, t)
+    Net-stream(sock, Just(t), True)
 
 fun catch-error( action : () -> <async,exn> a ) : async error<a>
   catch(fn(exn) Error(exn), { Ok(action()) })
@@ -129,6 +169,16 @@ pub fun net-stream/write-all( s : net-stream, data : bytes ) : <async,exn> ()
 // Write a string (as UTF-8).
 pub fun net-stream/write-text( s : net-stream, text : string ) : <async,exn> ()
   s.write-all(text.bytes)
+
+// Send a TLS close notification, telling the peer that no more data follows,
+// without closing the underlying socket. Does nothing on a plain stream.
+pub fun close-notify( s : net-stream ) : async ()
+  match s.engine
+    Just(t) ->
+      async-ioc { tls-close-notify(t) }
+      catch(fn(_) (), { flush(s.sock, t) })
+    Nothing ->
+      if s.secure then catch(fn(_) (), { s.sock.shutdown-write })
 
 // Close the stream (sending a TLS close notification first).
 pub fun net-stream/close( s : net-stream ) : async ()

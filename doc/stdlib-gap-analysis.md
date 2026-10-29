@@ -344,8 +344,8 @@ backends and diffs the output against its `.out` file.
 | 21 | `std/compress` | ❌ |
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
 | 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable · ❌ UDP |
-| 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle or `SSL_CERT_FILE`); mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ TLS server, client certificates |
-| 25 | `std/async/os/http` | ✅ HTTP/1.1 client for `http` and `https` (`http-get`/`post`/`request`) and server (`http-serve`, keep-alive, plain `http`); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) · ❌ client connection reuse, HTTP/2 |
+| 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle, `SSL_CERT_FILE`, or an explicit `ca`); TLS server: `tls-server-config` (PEM certificate chain and key) and `tls-accept` on accepted connections; mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ client certificates, SNI-based certificate selection, ALPN |
+| 25 | `std/async/os/http` | ✅ HTTP/1.1 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA (`tls-ca`) · ❌ client connection reuse, HTTP/2 |
 | 26–27 | streams, sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ❌ |
@@ -372,6 +372,13 @@ backends and diffs the output against its `.out` file.
   constant folding around `int32` conversions. It is worked around with
   `noinline` in `std/data/hash`. To reproduce, revert that and run
   `test/lib/hash1.kk` through `cabal run koka-test -- --match /lib/hash1/`.
+* When a `firstof` or `timeout` canceled a strand that contained a nested
+  `interleaved`, the nested strands were abandoned without running their
+  finalizers: the interleaving loop's own `receive` was canceled first, and
+  the strands' cancelations were left on its channel. For example, a server
+  built on `serve` leaked the open connections when it was canceled. Fixed
+  in `std/async/interleave` (test: `test/async/interleave-finally.kk`); this
+  also affects upstream with PR #955.
 * The libuv bindings did not ignore `SIGPIPE`, so writing to a closed socket
   or to a child that exited killed the whole program on the C backend (Node
   ignores it). The networking and process bindings now ignore it.

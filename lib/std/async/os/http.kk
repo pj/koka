@@ -6,7 +6,7 @@
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
 
-/* HTTP/1.1 client (`http` and `https`) and server (plain `http`).
+/* HTTP/1.1 client and server, for `http` and `https`.
 
    ```
    import std/async
@@ -27,6 +27,9 @@
    val res = http-get("http://127.0.0.1:8080/hello?name=koka")
    println((res.status, res.body-text))
    ```
+
+   For `https`, give the server a TLS configuration:
+   `http-serve(server, handler, tls = Just(tls-server-config(cert, key)))`.
 
    Bodies are framed with `Content-Length`, `Transfer-Encoding: chunked`, or
    (for responses) by the server closing the connection. The server supports
@@ -264,15 +267,18 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 // followed with a `GET` without a body, while `307` and `308` repeat the
 // original method and body. The `Authorization` and `Cookie` headers are
 // dropped when a redirect leads to a different origin.
-pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10 ) : <async,exn,net> http-response
+//
+// For `https`, the server certificate is checked against the system CA
+// certificates, or only against `tls-ca` (PEM certificates) if it is given.
+pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
-  if max-redirects <= 0 then send-request(method, u, headers, body)
-  else follow-redirects(method, u, headers, body, max-redirects)
+  if max-redirects <= 0 then send-request(method, u, headers, body, tls-ca)
+  else follow-redirects(method, u, headers, body, max-redirects, tls-ca)
 
-fun follow-redirects( method : string, u : url, headers : headers, body : bytes, redirects-left : int ) : <async,exn,net> http-response
-  val res = send-request(method, u, headers, body)
+fun follow-redirects( method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls-ca : string ) : <async,exn,net> http-response
+  val res = send-request(method, u, headers, body, tls-ca)
   val is-redirect = res.status == 301 || res.status == 302 || res.status == 303 || res.status == 307 || res.status == 308
   match res.header("Location")
     Just(location) | is-redirect && redirects-left > 0 ->
@@ -282,7 +288,7 @@ fun follow-redirects( method : string, u : url, headers : headers, body : bytes,
         then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
         else (method, body, headers)
       val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
-      follow-redirects(method', next, hs2, body', pretend-decreasing(redirects-left - 1))
+      follow-redirects(method', next, hs2, body', pretend-decreasing(redirects-left - 1), tls-ca)
     _ | is-redirect && res.header("Location").is-just ->
       throw("http: too many redirects (the last one was to " ++ res.header("Location").default("").show ++ ")")
     _ -> res
@@ -295,14 +301,14 @@ fun same-origin( a : url, b : url ) : bool
   a.scheme == b.scheme && a.host.to-lower == b.host.to-lower && a.effective-port == b.effective-port
 
 // Send one request (no redirects).
-fun send-request( method : string, u : url, headers : headers, body : bytes ) : <async,exn,net> http-response
+fun send-request( method : string, u : url, headers : headers, body : bytes, tls-ca : string ) : <async,exn,net> http-response
   if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
   val host-header = if u.port.is-just then u.host ++ ":" ++ conn-port.show else u.host
   val hs0 = headers.set-header("Host", host-header).set-header("Connection", "close")
   val hs = if hs0.header("User-Agent").is-just then hs0 else hs0.set-header("User-Agent", "koka-http")
-  val s = if u.scheme == "https" then tls-connect(u.host, conn-port) else plain-stream(tcp-connect(u.host, conn-port))
+  val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls-ca) else plain-stream(tcp-connect(u.host, conn-port))
   with finally { s.close }
   write-message(s, method ++ " " ++ target ++ " HTTP/1.1", hs, body)
   read-response(Reader(s, bytes/empty), method)
@@ -326,12 +332,12 @@ fun read-response( r : reader, method : string ) : <async,exn> http-response
         Http-response(status, parts.drop(2).join(" "), hs, res-body)
 
 // `GET` a URL.
-pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
-  http-request("GET", url, headers, max-redirects = max-redirects)
+pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
+  http-request("GET", url, headers, max-redirects = max-redirects, tls-ca = tls-ca)
 
 // `POST` a body to a URL.
-pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
-  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects)
+pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
+  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca)
 
 // `GET` a URL and return the body as text; raises an exception unless the status is 2xx.
 pub fun http-get-text( url : string ) : <async,exn,net> string
@@ -345,10 +351,17 @@ pub fun http-get-text( url : string ) : <async,exn,net> string
 
 // Serve HTTP requests on a listening TCP server, forever. Each connection is
 // handled in its own strand and may carry several requests (keep-alive).
-// An exception in `on-request` results in a `500` response.
-pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response ) : <async,exn,ndet|e> ()
+// An exception in `on-request` results in a `500` response. With a `tls`
+// configuration, connections use TLS (`https`); connections that fail the
+// TLS handshake are dropped.
+pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config> = Nothing ) : <async,exn,ndet|e> ()
   srv.serve fn(conn)
-    serve-connection(Reader(plain-stream(conn), bytes/empty), on-request)
+    match tls
+      Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), on-request)
+      Just(config) ->
+        val s = conn.tls-accept(config)
+        serve-connection(Reader(s, bytes/empty), on-request)
+        s.close-notify
 
 fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e> http-response ) : <async,exn,ndet|e> ()
   match r.read-until(crlfcrlf, 64 * 1024)
