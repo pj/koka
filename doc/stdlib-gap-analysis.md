@@ -335,6 +335,7 @@ backends and diffs the output against its `.out` file.
 | 12–13 | `std/os/fs` | ✅ Binary read/write/append, `read-lines`, `file-info`, `path-exists`, `remove-file`, `rename`, `set-permissions`, `create-dir`, `remove-dir(-all)`, `set-cwd`, temp files and directories, `glob` |
 | 14 | `std/os/io` | ✅ `eprint(ln)`, `flush`, `read-stdin(-lines)`, `*-is-tty`, `exit` |
 | 15 | `std/os/process` | ✅ `run`, `run-bytes`, `run-output` (argv, stdin, cwd, env; captures exit code, stdout and stderr) |
+| 15b | `std/async/os/process` | ✅ Asynchronous child processes: `spawn` with piped, inherited or ignored stdio, `write-stdin`, `close-stdin`, `read-stdout`/`read-stderr`, `wait`, `kill`, `pid`; `run-process(-bytes,-output)` capture output without blocking other strands, and a cancelled run (e.g. by `timeout`) kills the child |
 | 16 | `std/os/env` | ✅ `set-env`, `unset-env` · ❌ signals |
 | 17 | `std/data/json` | ✅ Parse (with line/column errors), compact and pretty output, accessors, `?json` encoding |
 | 18 | `std/test` | ✅ `run-tests`, `group`, `test`, `expect*`, `check-property` with generators |
@@ -371,6 +372,11 @@ backends and diffs the output against its `.out` file.
   constant folding around `int32` conversions. It is worked around with
   `noinline` in `std/data/hash`. To reproduce, revert that and run
   `test/lib/hash1.kk` through `cabal run koka-test -- --match /lib/hash1/`.
+* The libuv bindings did not ignore `SIGPIPE`, so writing to a closed socket
+  or to a child that exited killed the whole program on the C backend (Node
+  ignores it). The networking and process bindings now ignore it.
+* Koka does not rebuild a module when only its `extern import` C file
+  changes; touch the `.kk` file to force it.
 * `koka -o <absolute path>` fails with "could not find module".
 * On the JS backend, `bytes.subbytes(start, len)` called `slice(start, len)`,
   but `slice` takes an end index, so any slice with `start > 0` was wrong.

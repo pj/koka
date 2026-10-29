@@ -1,0 +1,15 @@
+(3,"out\n","err\n")
+fed through stdin
+from env
+/usr/bin
+
+UPPER
+(0,500000,True)
+0
+error: unable to run
+("apple\nbanana\ncherry\n",0)
+([0,0,0],True)
+143
+Nothing
+True
+(0,"process: stdout is not a pipe")
