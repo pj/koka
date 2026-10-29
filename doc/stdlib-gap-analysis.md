@@ -342,7 +342,10 @@ backends and diffs the output against its `.out` file.
 | 20 | `std/crypto/hash` | ✅ SHA-256, SHA-1, HMAC, constant-time compare · ❌ BLAKE2/3 |
 | 21 | `std/compress` | ❌ |
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
-| 23–27 | sockets, TLS, HTTP, streams, sync | ❌ (depend on the libuv `std/async` work) |
+| 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable · ❌ UDP |
+| 24 | TLS | ❌ (next: mbedtls on C, `node:tls` on JS) |
+| 25 | `std/async/os/http` | ✅ HTTP/1.1 client (`http-get`/`post`/`request`) and server (`http-serve`, keep-alive); Content-Length, chunked and read-to-close bodies · ❌ https, redirects, client connection reuse |
+| 26–27 | streams, sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ❌ |
 | 30 | `std/data/uuid` | ✅ v4 and v7, parse and show |
@@ -369,6 +372,18 @@ backends and diffs the output against its `.out` file.
   `noinline` in `std/data/hash`. To reproduce, revert that and run
   `test/lib/hash1.kk` through `cabal run koka-test -- --match /lib/hash1/`.
 * `koka -o <absolute path>` fails with "could not find module".
+* On the JS backend, `bytes.subbytes(start, len)` called `slice(start, len)`,
+  but `slice` takes an end index, so any slice with `start > 0` was wrong.
+  `kk_bytes_substring` also returned `[]` instead of `""`. Fixed here.
+* Several JS files returned `$std_core_types._Unit_`, which does not exist; the
+  correct name is `$std_core_types.Unit`. Fixed here.
+* Koka only links static C libraries (`lib<name>.a`) and only searches fixed
+  paths. The flake builds static libuv and pcre2 and sets
+  `KOKA_OPTIONS=--cclibdir=...`. Upstream PR #795 (pkg-config lookup) would
+  help.
+* The upstream async PRs #924 (repeating libuv callbacks) and #955 (fixes for
+  `firstof` exceptions, cancellation scopes, and canceled channel receives)
+  are applied in this fork.
 
 ### Koka language gotchas hit while writing these modules
 
@@ -385,3 +400,9 @@ backends and diffs the output against its `.out` file.
 * **Shadowing:** parameters named `all`, `default`, `fields` or `after` shadow
   functions of the same name and give confusing type errors.
 * **Effectful guards aren't allowed.** Pattern guards must be total.
+* **`mask<exn>{ ... }` widens an effect row.** Wrapping a `catch` in it gives
+  the result an extra `exn`, so it can sit next to code that may throw (for
+  example both branches of `interleaved`).
+* **More reserved words:** `handle`, `handler` and `raw` are keywords.
+* **Scoped `with x = f()` covers the rest of the block,** so a resource opened
+  that way stays open until the block ends.
