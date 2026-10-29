@@ -17,6 +17,7 @@ import std/core/char
 import std/core/string
 import std/core/int
 import std/core/vector
+import std/core/order
 
 
 // Return the head of list if the list is not empty.
@@ -583,3 +584,109 @@ pub fun unlines( xs : list<string> ) : string
 pub fun string/map( s : string, f : char -> e char ) : e string
   s.list.map(f).string // todo: optimize
 
+
+
+// ----------------------------------------------------------------------------
+// Sorting
+// ----------------------------------------------------------------------------
+
+// Sort a list using the implicit `?cmp` comparison.
+// The sort is _stable_ (equal elements keep their original order) and runs in _O(n log n)_.
+// It is a natural merge sort that also runs in _O(n)_ on lists that are already
+// (reverse) sorted.
+//
+// `[3,1,2].sort == [1,2,3]`
+pub fun sort( xs : list<a>, ^?cmp : (a,a) -> e order ) : e list<a>
+  merge-all(sort-runs(xs))
+
+// Sort a list using an explicit comparison function `cmp`.
+pub fun sort-by( xs : list<a>, cmp : (a,a) -> e order ) : e list<a>
+  xs.sort(?cmp=cmp)
+
+// Sort a list on a key computed by `key`; the key is computed once per element.
+// `["bb","a","ccc"].sort-on(length) == ["a","bb","ccc"]`
+pub fun sort-on( xs : list<a>, key : a -> e b, ^?cmp : (b,b) -> e order ) : e list<a>
+  xs.map(fn(x) (key(x),x)).sort(?cmp=fn(p,q) cmp(p.fst,q.fst)).map(snd)
+
+// Sort a list in descending order.
+pub fun sort-desc( xs : list<a>, ^?cmp : (a,a) -> e order ) : e list<a>
+  xs.sort(?cmp=fn(x,y) cmp(y,x))
+
+// Is the list sorted (in ascending order) according to `?cmp`?
+pub fun is-sorted( xs : list<a>, ^?cmp : (a,a) -> e order ) : e bool
+  match xs
+    Cons(x,xx as Cons(y)) -> if cmp(x,y) == Gt then False else is-sorted(xx)
+    _ -> True
+
+// Merge two sorted lists into one sorted list (stable: elements of `xs` go first on ties).
+pub fun merge( xs : list<a>, ys : list<a>, ^?cmp : (a,a) -> e order ) : e list<a>
+  match xs
+    Nil -> ys
+    Cons(x,xx) -> match ys
+      Nil -> xs
+      Cons(y,yy) ->
+        if cmp(x,y) == Gt then Cons(y, merge(xs, pretend-decreasing(yy)))
+                          else Cons(x, merge(pretend-decreasing(xx), ys))
+
+// Remove adjacent duplicates (use after `sort` to remove all duplicates).
+// `[1,1,2,3,3,3,1].dedup == [1,2,3,1]`
+pub fun dedup( xs : list<a>, ^?(==) : (a,a) -> e bool ) : e list<a>
+  match xs
+    Cons(x,xx) -> Cons(x, dedup(pretend-decreasing(xx.drop-while(fn(y) x == y))))
+    Nil -> Nil
+
+// Group adjacent elements that are equal (according to `?(==)`).
+// `[1,1,2,3,3].group == [[1,1],[2],[3,3]]`
+pub fun group( xs : list<a>, ^?(==) : (a,a) -> e bool ) : e list<list<a>>
+  match xs
+    Cons(x,xx) ->
+      val (same,rest) = xx.span(fn(y) x == y)
+      Cons(Cons(x,same), group(pretend-decreasing(rest)))
+    Nil -> Nil
+
+// Group adjacent elements for which `same` holds with the first element of the group.
+pub fun group-by( xs : list<a>, same : (a,a) -> e bool ) : e list<list<a>>
+  xs.group(?(==)=same)
+
+// Split a list into maximal ascending runs (strictly descending runs are reversed).
+fun sort-runs( xs : list<a>, ^?cmp : (a,a) -> e order ) : e list<list<a>>
+  match xs
+    Cons(a, Cons(b, xx)) ->
+      val (run,rest) = if cmp(a,b) == Gt then sort-descending(b, [a], xx)
+                                         else sort-ascending(b, [a], xx)
+      Cons(run, sort-runs(pretend-decreasing(rest)))
+    Cons(_, Nil) -> [xs]
+    Nil -> []
+
+// `acc` is the run so far in reverse order, `a` is the last element of the run
+fun sort-ascending( a : a, acc : list<a>, xs : list<a>, ^?cmp : (a,a) -> e order ) : e (list<a>,list<a>)
+  match xs
+    Cons(b, xx) -> if cmp(a,b) != Gt then sort-ascending(b, Cons(a,acc), xx)
+                          else (Cons(a,acc).reverse, xs)
+    _ -> (Cons(a,acc).reverse, Nil)
+
+// strictly descending only, to keep the sort stable
+fun sort-descending( a : a, acc : list<a>, xs : list<a>, ^?cmp : (a,a) -> e order ) : e (list<a>,list<a>)
+  match xs
+    Cons(b, xx) -> if cmp(a,b) == Gt then sort-descending(b, Cons(a,acc), xx)
+                          else (Cons(a,acc), xs)
+    _ -> (Cons(a,acc), Nil)
+
+fun merge-all( runs : list<list<a>>, ^?cmp : (a,a) -> e order ) : e list<a>
+  match runs
+    Cons(r, Nil) -> r
+    Nil -> Nil
+    _ -> merge-all(pretend-decreasing(merge-pairs(runs)))
+
+fun merge-pairs( runs : list<list<a>>, ^?cmp : (a,a) -> e order ) : e list<list<a>>
+  match runs
+    Cons(a, Cons(b, rest)) -> Cons(merge(a,b), merge-pairs(rest))
+    _ -> runs
+
+// Sort a vector using the implicit `?cmp` comparison (stable).
+pub fun vector/sort( v : vector<a>, ^?cmp : (a,a) -> e order ) : e vector<a>
+  v.list.sort.vector
+
+// Sort a vector using an explicit comparison function (stable).
+pub fun vector/sort-by( v : vector<a>, cmp : (a,a) -> e order ) : e vector<a>
+  v.list.sort(?cmp=cmp).vector

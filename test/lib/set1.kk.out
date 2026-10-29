@@ -1,0 +1,14 @@
+{1, 2, 3}
+(3,True,False,Just(1),Just(3))
+{0, 1, 2}
+(15,{5, 6, 7, 8, 9, 10},{1, 2, 3, 4})
+(True,False,True)
+{2, 4, 6, 8, 10}
+{0, 1, 2, 3}
+(55,True,True)
+(Just(5),Nothing,Just(4),Just(6))
+(True,False,True)
+{"apple", "fig", "pear"}
+True
+{1: "one", 2: "two"}
+({"a": 1, "b": 2},Just(1))
