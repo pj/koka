@@ -1,0 +1,61 @@
+("https","user:pw","example.com",Just(8080))
+("/a/b/c","x=1&y=two%20words&z=a+b","frag")
+[("x","1"),("y","two words"),("z","a b")]
+(Just("two words"),Just(8080),Just(80))
+https://user:pw@example.com:8080/a/b/c?x=1&y=two%20words&z=a+b#frag
+Just(("::1",Just(3000),"http://[::1]:3000/x"))
+Just(("mailto","someone@example.com"))
+Just(("","/just/a/path","q"))
+True
+https://user:pw@example.com:8080/a/b/c?k=v%20w&%C3%A9=%26#frag
+g:h -> g:h
+g -> http://a/b/c/g
+./g -> http://a/b/c/g
+g/ -> http://a/b/c/g/
+/g -> http://a/g
+//g -> http://g
+?y -> http://a/b/c/d;p?y
+g?y -> http://a/b/c/g?y
+#s -> http://a/b/c/d;p?q#s
+g#s -> http://a/b/c/g#s
+g?y#s -> http://a/b/c/g?y#s
+;x -> http://a/b/c/;x
+g;x -> http://a/b/c/g;x
+ -> http://a/b/c/d;p?q
+. -> http://a/b/c/
+./ -> http://a/b/c/
+.. -> http://a/b/
+../ -> http://a/b/
+../g -> http://a/b/g
+../.. -> http://a/
+../../ -> http://a/
+../../g -> http://a/g
+../../../g -> http://a/g
+/./g -> http://a/g
+/../g -> http://a/g
+g. -> http://a/b/c/g.
+.g -> http://a/b/c/.g
+g.. -> http://a/b/c/g..
+..g -> http://a/b/c/..g
+./../g -> http://a/b/g
+./g/. -> http://a/b/c/g/
+g/./h -> http://a/b/c/g/h
+g/../h -> http://a/b/c/h
+[["name","age","note"],["ann","30","likes, commas"],["bob \"the builder\"","25","multi\nline"],["","",""]]
+"name,age,note\nann,30,\"likes, commas\"\n\"bob \"\"the builder\"\"\",25,\"multi\nline\"\n,,\n"
+True
+[[("a","1"),("b","2")],[("a","3"),("b","4")]]
+csv: unterminated quoted field
+("f724472c-6823-4a47-aace-159829713fb2",4,True,16)
+Just("550e8400-e29b-41d4-a716-446655440000")
+(True,"00000000-0000-0000-0000-000000000000")
+(4,7,36,True,True)
+e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855
+ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
+248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1
+a9993e364706816aba3e25717850c26c9cd0d89d
+2fd4e1c67a2d28fced849ee1bb76e7391b93eb12
+41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3
+5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843
+60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54
+(True,False)

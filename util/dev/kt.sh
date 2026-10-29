@@ -17,7 +17,7 @@ for f in "$@"; do
       echo "PASS [$target] $f"
     else
       echo "FAIL [$target] $f"; fail=1
-      if [ -f "$f.out" ]; then diff <(printf '%s\n' "$out") "$f.out" | head -30; else printf '%s\n' "$out" | head -30; fi
+      if [ -f "$f.out" ]; then diff <(printf '%s\n' "$out") "$f.out" | head -200; else printf '%s\n' "$out" | head -200; fi
     fi
   done
 done
