@@ -93,7 +93,7 @@ pub fun adjust-length( bs : bytes, newlen : int ) : bytes
 
 extern prim-subbytes(bs : bytes, start : ssize_t, len : ssize_t ) : bytes
   c  "kk_bytes_subbytes"
-  js inline "#1.slice(#2,#3)"
+  js inline "#1.slice(#2,(#2)+(#3))"
 
 // Return a range of `len` bytes starting at `start`.
 // If `len < 0`, it copies all bytes from `start` to the end (`bs.length - start`).
