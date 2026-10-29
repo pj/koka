@@ -301,9 +301,15 @@ fun interleave-strands-ex( needall : bool, setup : (interleave : (action : () ->
     interleave-strand(needall,ch,action)
   // A resumption does not capture the scope, so strands are resumed inside it;
   // once it is canceled, in the parent, so their finalizers can still await.
+  // The receive is in the parent scope so it is not canceled with the strands.
+  // If the parent scope is canceled, cancel the strands too and keep resuming
+  // them until they are done, so their finalizers run (instead of abandoning
+  // their canceled resumptions on the channel).
   while{ strands-are-active() }
-    val r = in-parent-scope{ ch.receive() }   // not canceled with the strands
-    if is-canceled() then in-parent-scope(r) else r()
+    val received = in-parent-scope{ unsafe-uncancel{ ch.receive() } }
+    match received
+      Just(r)  -> if is-canceled() then in-parent-scope(r) else r()
+      Nothing  -> cancel-outstanding()
 
 // Interleave an action such that all async operations are captured and emit a resumption on the given channel.
 fun interleave-strand(needall : bool, ch : channel<() -> <async,strands<a>|e> ()>, action : () -> <async,strands<a>|e> a ) : <async,strands<a>|e> ()

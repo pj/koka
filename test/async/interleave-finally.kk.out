@@ -1,0 +1,11 @@
+1: finalized
+1: b
+2: finalized right
+2: finalized left
+2: b
+3: finalized after awaiting
+3: timed out
+4: finalized
+4: b
+ 
+async/interleave-finally/main: () -> <std/async/async/async,console,exn,ndet> ()
