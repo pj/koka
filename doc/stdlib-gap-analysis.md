@@ -1,0 +1,313 @@
+# Koka standard library: gap analysis and roadmap
+
+Status as of Koka 3.3.0 (`dev` @ d23ee7cd, October 2026).
+
+This document compares Koka's standard library (`lib/std`) with the standard
+libraries of the ten most widely used general-purpose languages. It then
+proposes a prioritised list of modules that would bring Koka to rough parity.
+
+## 1. Method
+
+**Languages compared.** The ten most widely used general-purpose languages,
+taken as the consensus of TIOBE, IEEE Spectrum, RedMonk and the Stack Overflow
+developer survey (2025–26):
+
+Python · JavaScript/TypeScript (one column; same runtime library) · Java · C# · C++ · C · Go · Rust · PHP · Kotlin
+
+Swift and Ruby were next in line. SQL, shell and HTML/CSS were left out
+because they are not general-purpose languages.
+
+**De-facto libraries.** Some languages ship small standard libraries on
+purpose: C, C++ and Rust most of all, and Kotlin and JS to a lesser degree. For
+these, a capability counts as covered when one library is the near-universal
+default. Examples: `serde_json`, `tokio` and `rand` for Rust; libcurl, zlib and
+OpenSSL for C; nlohmann/json and fmt for C++; `kotlinx.*` for Kotlin. These are
+marked 📦 below. A capability is not covered when the ecosystem has no single
+default.
+
+**Exclusions.** Some modules are deprecated or removed, or their own
+maintainers or communities widely regard them as mistakes or poorly
+implemented. These are not counted as parity targets (see §4).
+
+**Legend:** ✅ in the standard library · 📦 de-facto default library · ⚠️ partial or weak · ❌ absent
+
+## 2. What Koka has today
+
+| Area | Modules | Assessment |
+|---|---|---|
+| Core types | `std/core/*` (list, string, sslice, char, vector, bytes, bslice, maybe, either, result, tuple, order, exn, show) | Good functional basics; ~77 list functions. **No `sort`** (issue #610). |
+| Numbers | `int` (arbitrary precision by default), `num/int32`, `num/int64`, `num/float64`, `num/ddouble` (128-bit double-double), `num/decimal`, `uint8`/`float32` as storage types | **Ahead of most languages**: bigints by default, plus decimal and double-double arithmetic. |
+| Random | `num/random` (SFC PRNG, `strong-random` CSPRNG) | Adequate. |
+| Time | `std/time/*` (instants, durations, calendars, time zones, leap seconds, TAI/UT1, astronomical time, formatting and parsing) | **Ahead of every language compared**, including Java's `java.time`. |
+| Text | `text/regex` (PCRE2), `text/parse` (parser combinators), `text/unicode` (NFC/NFD, graphemes, width) | Good. Unicode width and grapheme handling have open bugs (#457, #458). |
+| OS | `os/path` (thorough), `os/env` (read-only), `os/flags` (getopt-style CLI parsing), `os/file` (read/write *text* only), `os/dir` (list, copy, ensure-dir, is-file), `os/process` (`run-system` through the shell only), `os/readline`, `os/task` (basic parallel tasks, LVars) | **Thin.** No delete, rename, stat, binary I/O, append, stderr, exit, spawning a process with arguments, or child pipes. |
+| Async | `std/async/*` (strands, channels, promises, timers, async files) | Effect-based design; libuv port in progress upstream. |
+| Data structures | `data/map`, `data/set`, `data/dict`, `data/imap`, `data/iset`, `data/array` | **All six are empty `Todo` stubs** (13–15 lines each). |
+| Debug | `core/debug` (trace, assert, breakpoint) | Adequate. |
+
+Koka has implicit-parameter overloading (`?cmp`, `?show`, `?kk-file-line`).
+This is the natural way to provide `?hash`, `?eq` and `?cmp` for the
+collections proposed below.
+
+### Community prior art (github.com/koka-community, unofficial)
+
+* **`std`:** hashmap and hashset (plus mutable variants), rb-map and rb-set,
+  trie, deque, heap, Okasaki structures, string builder (`stringb`), `json`,
+  `sort`, `log`, a pretty printer, an ANSI printer and memoisation. Its README
+  calls `linearmap`/`linearset` a "stopgap … until we have more efficient
+  datastructures integrated into Koka".
+* **`uv`:** libuv bindings (fs, tcp, pipe, process, signal, tty, streams).
+* **`serjson`:** JSON serialisation.
+* **`zlib`, `mbedtls`, `llhttp`:** C library bindings.
+* **`kunit`:** unit testing.
+
+There is no package manager yet, which is itself on the upstream roadmap.
+Programs therefore can't easily depend on these community libraries, and that
+is a strong argument for moving the most fundamental ones into `std`.
+
+## 3. Comparison matrix
+
+### Collections and algorithms
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Sort (stable, custom compare) | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ qsort | ✅ slices | ✅ | ✅ | ✅ | ❌ |
+| Hash map / set | ✅ dict/set | ⚠️ Map/Set (identity keys only) | ✅ | ✅ | ✅ | 📦 glib/uthash | ✅ | ✅ | ✅ | ✅ | ❌ stub |
+| Ordered (tree) map / set | ⚠️ (bisect; 📦 sortedcontainers) | 📦 | ✅ TreeMap | ✅ SortedDictionary | ✅ std::map | 📦 | ❌ (📦 google/btree) | ✅ BTreeMap | ⚠️ | ✅ (JVM) | ❌ stub |
+| Hashing protocol for user types | ✅ `__hash__` | ❌ | ✅ hashCode | ✅ GetHashCode | ✅ std::hash | ❌ | ⚠️ comparable only | ✅ Hash | ⚠️ | ✅ | ❌ |
+| Deque / queue | ✅ deque | ❌ | ✅ ArrayDeque | ✅ Queue | ✅ | 📦 | ❌ (container/list) | ✅ VecDeque | ✅ SplQueue | ✅ ArrayDeque | ❌ |
+| Priority queue / heap | ✅ heapq | 📦 | ✅ | ✅ (.NET 6+) | ✅ | 📦 | ✅ container/heap | ✅ BinaryHeap | ✅ | ✅ (JVM) | ❌ |
+| Growable mutable array | ✅ list | ✅ Array | ✅ ArrayList | ✅ List | ✅ vector | 📦 | ✅ slice | ✅ Vec | ✅ | ✅ | ⚠️ vector + local assign |
+| Lazy iterators / sequences | ✅ itertools/generators | ✅ iterator helpers | ✅ Streams | ✅ LINQ | ✅ ranges | ❌ | ✅ iter (1.23) | ✅ Iterator | ✅ generators | ✅ Sequence | ⚠️ effects can do it; no library |
+| Bitset | ⚠️ int | ❌ | ✅ BitSet | ✅ BitArray | ✅ bitset | ❌ | ⚠️ math/bits | 📦 | ❌ | ✅ (JVM) | ❌ |
+
+### Text and encodings
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| String builder | ✅ join/io.StringIO | ✅ | ✅ StringBuilder | ✅ | ✅ | ⚠️ | ✅ strings.Builder | ✅ String | ✅ | ✅ buildString | ❌ (community stringb) |
+| Format / interpolation | ✅ f-strings | ✅ templates | ✅ format | ✅ $"" | ✅ std::format | ✅ printf | ✅ fmt | ✅ format! | ✅ sprintf | ✅ templates | ⚠️ show, pad-left only |
+| Regex | ✅ | ✅ | ✅ | ✅ | ⚠️ std::regex (excluded, §4) → 📦 RE2/PCRE2 | 📦 PCRE2 | ✅ RE2 | 📦 regex | ✅ PCRE | ✅ | ✅ PCRE2 |
+| Unicode (normalise, graphemes, case) | ✅ unicodedata | ✅ Intl/Segmenter | ✅ | ✅ | 📦 ICU | 📦 ICU/utf8proc | ✅ unicode, x/text | ⚠️ 📦 unicode-* | ✅ intl/mbstring | ✅ | ⚠️ (bugs #457, #458) |
+| UTF-8 ⇄ bytes with error handling | ✅ | ✅ TextEncoder | ✅ | ✅ | ⚠️ | ❌ | ✅ | ✅ | ✅ | ✅ | ⚠️ |
+| Base64 / hex | ✅ | ✅ | ✅ | ✅ | 📦 | 📦 | ✅ | 📦 base64/hex | ✅ | ✅ | ❌ |
+| Parser combinators | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 📦 nom | ❌ | ❌ | ✅ **ahead** |
+| Pretty printer (Wadler-style) | ⚠️ pprint | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | 📦 | ❌ | ❌ | ❌ (community pprint) |
+
+### Data formats
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| JSON | ✅ | ✅ | 📦 Jackson | ✅ System.Text.Json | 📦 nlohmann | 📦 cJSON/jansson | ✅ | 📦 serde_json | ✅ | 📦 kotlinx.serialization | ❌ (community json/serjson) |
+| CSV | ✅ | 📦 csv-parse | 📦 | 📦 CsvHelper | 📦 | 📦 | ✅ | 📦 csv | ✅ | 📦 | ❌ |
+| TOML (config) | ✅ tomllib (read) | 📦 | 📦 | 📦 | 📦 toml++ | 📦 | 📦 | 📦 toml | ❌ | 📦 | ❌ |
+| XML | ✅ | ⚠️ DOMParser (browser) | ✅ | ✅ | 📦 pugixml | 📦 libxml2 | ✅ | 📦 quick-xml | ✅ | ✅ (JVM) | ❌ |
+| UUID | ✅ | ✅ randomUUID | ✅ | ✅ Guid | 📦 | 📦 | 📦 google/uuid | 📦 uuid | 📦 ramsey/uuid | ✅ kotlin.uuid | ❌ |
+| Generic serialisation (derive) | ⚠️ dataclasses | ❌ | ⚠️ (excluded, §4) | ✅ | ❌ | ❌ | ✅ struct tags | 📦 serde | ⚠️ | 📦 kotlinx.serialization | ❌ (needs language support) |
+
+### OS, I/O and processes
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| File read/write (binary, append, streaming) | ✅ | ✅ fs | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ text, whole-file only |
+| File metadata, delete, rename, permissions | ✅ | ✅ | ✅ | ✅ | ✅ filesystem | ⚠️ POSIX | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Directory walk / glob / temp files | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ POSIX | ✅ | ⚠️ 📦 walkdir/tempfile | ✅ | ✅ | ⚠️ list/copy, tempdir |
+| Paths | ✅ pathlib | ✅ path | ✅ | ✅ | ✅ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| stdin / stdout / stderr streams | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ stdout and readline only |
+| Process spawn (args, pipes, exit code) | ✅ subprocess | ✅ child_process | ✅ ProcessBuilder | ✅ | 📦 Boost.Process | ⚠️ POSIX spawn | ✅ os/exec | ✅ | ✅ proc_open | ✅ (JVM) | ⚠️ shell string only |
+| Exit code, signals, set env | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ (env is read-only) |
+| CLI argument parsing | ✅ argparse | ✅ parseArgs | 📦 picocli | 📦 System.CommandLine | 📦 CLI11 | ⚠️ getopt | ✅ flag | 📦 clap | ⚠️ getopt | 📦 clikt | ✅ os/flags |
+
+### Networking and security
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| URL parse / query encode | ✅ | ✅ URL | ✅ URI | ✅ Uri | 📦 | 📦 | ✅ net/url | 📦 url | ✅ | ✅ (JVM) | ❌ |
+| TCP / UDP sockets | ✅ | ✅ net/dgram | ✅ | ✅ | 📦 Asio | ✅ BSD sockets | ✅ | ✅ | ✅ | ✅ (JVM) | ❌ (community uv) |
+| TLS | ✅ ssl | ✅ tls | ✅ | ✅ SslStream | 📦 OpenSSL | 📦 OpenSSL | ✅ crypto/tls | 📦 rustls | ✅ | ✅ (JVM) | ❌ (community mbedtls) |
+| HTTP client | ✅ urllib (📦 requests) | ✅ fetch | ✅ HttpClient | ✅ HttpClient | 📦 libcurl | 📦 libcurl | ✅ | 📦 reqwest | ✅ curl ext | 📦 ktor-client | ❌ |
+| HTTP server | ⚠️ http.server (dev) | ✅ http | ⚠️ jdk.httpserver | ✅ Kestrel | 📦 Beast | 📦 | ✅ net/http | 📦 axum/hyper | ✅ (SAPI) | 📦 ktor | ❌ |
+| Crypto hashes, HMAC | ✅ hashlib | ✅ crypto | ✅ MessageDigest | ✅ | 📦 OpenSSL | 📦 OpenSSL | ✅ | 📦 RustCrypto | ✅ | ✅ (JVM) | ❌ |
+| Secure random | ✅ secrets | ✅ | ✅ | ✅ | ⚠️ random_device | ❌ | ✅ | 📦 rand/getrandom | ✅ | ✅ | ✅ strong-random |
+| Compression (gzip/deflate, zip) | ✅ | ✅ zlib | ✅ | ✅ | 📦 zlib | 📦 zlib | ✅ | 📦 flate2 | ✅ | ✅ (JVM) | ❌ (community zlib) |
+
+### Concurrency
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Async I/O runtime | ✅ asyncio | ✅ event loop | ✅ virtual threads | ✅ async/await | 📦 Asio | 📦 libuv | ✅ goroutines | 📦 tokio | ⚠️ Fibers (📦 Amp) | 📦 kotlinx.coroutines | ⚠️ in progress (libuv) |
+| Threads / tasks | ✅ | ✅ workers | ✅ | ✅ | ✅ | ✅ C11/pthreads | ✅ | ✅ | ❌ | ✅ | ⚠️ basic `task`/`parallel` |
+| Mutex, atomics, channels | ✅ | ⚠️ Atomics | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ⚠️ async channels only |
+| Timers, sleep | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ async wait |
+
+### Numbers and time
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Big integers | ✅ | ✅ BigInt | ✅ | ✅ | 📦 GMP/Boost | 📦 GMP | ✅ math/big | 📦 num-bigint | ✅ gmp | ✅ (JVM) | ✅ default `int` |
+| Decimal | ✅ | ❌ | ✅ BigDecimal | ✅ decimal | 📦 | 📦 | ⚠️ | 📦 rust_decimal | ✅ bcmath | ✅ (JVM) | ✅ |
+| Rationals / complex | ✅ fractions | ❌ | ❌ | ✅ Complex | ✅ complex | ✅ complex.h | ✅ big.Rat, complex128 | 📦 num | ❌ | ❌ | ❌ |
+| Statistics / math helpers | ✅ statistics, math | ✅ Math | ✅ Math | ✅ Math | ✅ cmath | ✅ math.h | ✅ math | ✅ f64 methods | ✅ | ✅ | ✅ float64 math |
+| Date/time and time zones | ✅ zoneinfo | ⚠️ Date → Temporal | ✅ java.time | ✅ | ✅ chrono (C++20) | ⚠️ time.h | ✅ | ⚠️ 📦 chrono/jiff | ✅ | 📦 kotlinx-datetime | ✅ **ahead** |
+
+### Developer tooling
+
+| Capability | Python | JS/TS | Java | C# | C++ | C | Go | Rust | PHP | Kotlin | **Koka** |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Unit testing | ✅ unittest (📦 pytest) | ✅ node:test | 📦 JUnit | 📦 xUnit | 📦 GoogleTest | 📦 | ✅ testing | ✅ #[test] | 📦 PHPUnit | ✅ kotlin.test | ❌ (community kunit) |
+| Logging | ✅ logging | ⚠️ console (📦 pino) | 📦 SLF4J | ✅ ILogger | 📦 spdlog | ⚠️ syslog | ✅ log/slog | 📦 log/tracing | 📦 Monolog | 📦 | ❌ (community log) |
+| Embedded SQL database | ✅ sqlite3 | ⚠️ node:sqlite (new) | ✅ JDBC (driver 📦) | 📦 Microsoft.Data.Sqlite | 📦 | 📦 sqlite | ✅ database/sql (driver 📦) | 📦 rusqlite | ✅ PDO | 📦 | ❌ |
+
+### Rough tally
+
+Koka is fully at parity in 10 of the 50 capabilities, and partial in about 15 more. It is ahead of
+the field in time, numeric towers and parser combinators, and effects give it a
+uniquely clean async and generator story. It is weakest in exactly the areas
+every other language treats as table stakes:
+
+1. collections (including `sort`)
+2. file and process I/O
+3. encodings and data formats
+4. networking
+5. testing and logging
+
+## 4. Excluded: modules their own communities regret
+
+These were not used as parity targets.
+
+| Language | Excluded | Reason |
+|---|---|---|
+| Python | `asyncore`, `asynchat`, `smtpd`, `cgi`, `cgitb`, `telnetlib`, `nntplib`, `imp`, `distutils`, audio modules, etc. | The "dead batteries" ([PEP 594](https://peps.python.org/pep-0594/)), removed in 3.12–3.13. |
+| Java | `java.util.Date` and `Calendar`; `Vector`, `Hashtable` and `Stack`; Java object serialisation; `SecurityManager`; CORBA, RMI and applets; `java.util.logging` (in practice) | Superseded by `java.time` and the generic collections. Brian Goetz has called serialisation a "horrible mistake". The rest were removed or deprecated for removal. |
+| C# | `BinaryFormatter`, non-generic `ArrayList`/`Hashtable`, `WebClient`/`HttpWebRequest`, Remoting | Removed (.NET 9) or obsolete. |
+| JS / Node | `Date` (being replaced by Temporal); `url.parse`, `querystring`, `domain`, `punycode` | Legacy or deprecated in Node. |
+| C++ | `std::regex`; `std::auto_ptr`; `vector<bool>`; `std::valarray`; `<codecvt>`/`wstring_convert`; `std::rand` | `std::regex` is widely considered too slow to use, and the ABI freezes it that way. The rest are removed, deprecated or widely avoided. |
+| C | `gets`; `strtok`; locale-dependent `<ctype.h>` behaviour | `gets` was removed in C11; `strtok` is not reentrant. |
+| Go | `container/list` and `container/ring` (rarely useful, per the Go team); `net/rpc`, `net/smtp`, `log/syslog` and `syscall` (frozen); `io/ioutil` (deprecated); `plugin` | Frozen or deprecated. |
+| PHP | `mysql_*`, `ereg`, `mcrypt`, `create_function`, `each()`; SPL data structures (in practice) | Removed. SPL structures are generally avoided in favour of `ext-ds`. |
+| Rust | `LinkedList` (officially discouraged in its own docs) | Discouraged by the docs themselves. |
+
+**Lessons that inform the roadmap below:**
+
+* Don't ship mutable non-generic collections, linked lists or a toy HTTP
+  server.
+* Make the time API immutable and zone-aware. Koka already does this.
+* Don't ship an implicit, reflection-based binary serialisation format.
+* Don't ship a regex engine that's too slow to use. Koka's choice of PCRE2 is
+  sound.
+* Freeze rather than grow protocol-specific clients (SMTP, NNTP, telnet). Koka
+  shouldn't add these at all.
+
+## 5. Recommended modules
+
+Priority reflects (a) how many of the ten languages provide the capability in
+std or as a near-universal default, and (b) how much else depends on it.
+
+Every module with externs needs **both a C and a JS implementation**. CI only
+tests these two backends, and the C# backend is broken (§6), so it can be
+ignored.
+
+### Tier 0: foundations (blocking almost everything else)
+
+| # | Module | Contents | Notes and prior art |
+|---|---|---|---|
+| 1 | `std/core/list` + `std/core/vector`: **sort** | Stable merge sort (`sort`, `sort-by`, `sort-on`) using `?cmp`; vector sort; `binary-search`; `dedup`; `group-by` | Upstream issue #610 (and #591). Pure Koka, FBIP-friendly. Community `std/data/sort`. **Best first PR.** |
+| 2 | `std/core/hash` | `hash` overloadable through an implicit `?hash` parameter; instances for primitives, strings, lists, tuples, maybe/either; `combine`; a seeded fast hash (wyhash or SipHash-1-3) in C and JS | Prerequisite for hash maps, sets and memoisation. Community `std/data/hash`. |
+| 3 | `std/data/map`, `std/data/set` (fill the stubs) | Persistent ordered map and set keyed by `?cmp` (weight-balanced or red-black tree): insert, lookup, delete, union, intersect, diff, fold, range queries, min/max, `to-list`/`from-list` | Stubs already exist upstream. Community `rb-map` and `rb-set`. Koka's FBIP makes in-place updates of uniquely-owned trees cheap. |
+| 4 | `std/data/hashmap`, `std/data/hashset` (or fill `dict`) | Persistent HAMT keyed by `?hash` + `?eq`, with the same API shape as map | Community `hashmap`, `hashset`. |
+| 5 | `std/data/imap`, `std/data/iset` (fill the stubs) | Int-keyed Patricia trees (as in Haskell's IntMap) | Stubs already exist. |
+| 6 | `std/data/array` (fill the stub) | Growable mutable array (push, pop, set, slice, iterate) under a `st<h>` heap effect, plus `freeze` to vector | Upstream roadmap item: "improve performance of array/mutable reference programming". Coordinate with maintainers. |
+| 7 | `std/data/deque`, `std/data/heap` | Persistent deque (Okasaki/finger tree); persistent priority queue (pairing or leftist heap) | Community `deque`, `heap`, `okasaki/*`. |
+| 8 | `std/core/seq` (or `std/data/iter`) | Lazy sequences and generators built on effects (`yield`); combinators such as map, filter, take, zip, chunk, window and enumerate; consuming from lists, vectors, maps and file lines | An idiomatic Koka strength. It also gives every collection one shared traversal API. |
+
+### Tier 1: everyday programs (scripts, CLIs, tools)
+
+| # | Module | Contents | Notes |
+|---|---|---|---|
+| 9 | `std/text/builder` | Efficient string builder (append, append-char, `to-string`) | Community `stringb`. |
+| 10 | `std/text/format` | `format("{} has {:>8.2}", ...)`-style formatting; width, alignment and precision; integer bases | Every language has this. It could use `?show`. Check what `std/time/format` already provides. |
+| 11 | `std/text/encoding` | UTF-8 encode/decode with errors (bytes ⇄ string), base64 (standard and URL-safe), hex, percent-encoding | Builds on `core/bytes`. Related upstream issue #418 (bytes). |
+| 12 | `std/os/file` (extend) | Binary read/write, append, streaming file handles, `exists`, `remove`, `rename`, `metadata`/stat (size, mtime, permissions), `set-permissions`, temp files, symlinks | Biggest OS gap. Async variants live in `std/async/os/file`. |
+| 13 | `std/os/dir` (extend) | `create-dir(-all)`, `remove-dir(-all)`, `walk` (lazy, through `seq`), `glob` | |
+| 14 | `std/os/io` | stdin as a stream or lines, `eprint`/`eprintln` (stderr), `flush`, `is-tty` | Today only stdout and `readline` exist. |
+| 15 | `std/os/process` (extend) | Spawn with an argv list (no shell), environment and cwd, stdin/stdout/stderr pipes, wait or exit status, kill; `exit(code)` | Community `uv/process` is the async route. |
+| 16 | `std/os/env` (extend), `std/os/signal` | `set-env`, `unset-env`; signal handlers as an effect | |
+| 17 | `std/data/json` | JSON value type, parser with error positions, serialiser, pretty printer, a `?to-json`/`?from-json` implicit-instance convention | Community `std/data/json` and `serjson`. Ergonomics depend on derive support (§6). |
+| 18 | `std/test` | Test effect: `test`, `expect`, `expect-eq`, grouping, a runner with summary and exit code; optional property testing using `num/random` | Go, Rust, Python and Kotlin ship this in std. Community `kunit`. |
+| 19 | `std/log` | Levelled, structured logging as an effect (handler decides sink and format) | Go's `log/slog` is the model. Community `std/log`. |
+
+### Tier 2: networked and production programs
+
+| # | Module | Contents | Notes |
+|---|---|---|---|
+| 20 | `std/crypto/hash` | SHA-256/512, SHA-1 (for legacy use only), BLAKE2b/BLAKE3, HMAC; constant-time compare | C: vendor a small audited implementation, or use mbedtls. JS: `node:crypto` / WebCrypto. |
+| 21 | `std/compress` | deflate, zlib, gzip (stream and one-shot); zip read/write later | Community `zlib`. |
+| 22 | `std/net/url` | RFC 3986 parse and build, query-string encode and decode, resolve relative URLs | Pure Koka. |
+| 23 | `std/net/tcp`, `std/net/udp`, `std/net/dns` | Async sockets on the libuv event loop | Community `uv` (tcp, pipe, stream). **Coordinate with the upstream libuv `std/async` port.** |
+| 24 | `std/net/tls` | Client and server TLS over the socket stream | Community `mbedtls`. JS: `node:tls`. |
+| 25 | `std/net/http` | HTTP/1.1 client (first) and a minimal production-capable server; request/response types; headers; chunked transfer | Community `llhttp` parser. Go's `net/http` is the model of "server good enough for production". Do **not** ship a toy dev-only server (§4). |
+| 26 | `std/io/stream` | Reader and writer effects (byte and text), buffering, line splitting, connecting files, processes, sockets and compression | Should be designed before #12, #15, #21 and #23 so that they share one I/O abstraction. |
+| 27 | `std/os/sync` | Atomic refs, mutex, thread-safe channels for `std/os/task` | Upstream roadmap: "parallel task support is very basic; we need a great work-stealing thread pool". This is runtime work; coordinate. |
+
+### Tier 3: parity polish
+
+| # | Module | Contents | Notes |
+|---|---|---|---|
+| 28 | `std/data/csv` | RFC 4180 reader and writer, streaming | Python, Go and PHP ship this. |
+| 29 | `std/data/toml` | Parse and serialise (config files) | Python ships a reader (`tomllib`). Everyone else uses a de-facto library. |
+| 30 | `std/data/uuid` | v4 (random) and v7 (time-ordered); parse and show | Uses `strong-random` and `std/time`. |
+| 31 | `std/num/rational`, `std/num/complex` | Exact rationals over `int`; complex `float64` | Cheap to add, given bigints. |
+| 32 | `std/data/bitset` | Dense bitset over `bytes` or int64 words | |
+| 33 | `std/text/pretty` | Wadler/Leijen pretty printer | Already in the Haskell compiler. Community `std/pretty`. |
+| 34 | `std/text/unicode` (fix and extend) | Fix #457 (emoji width) and #458 (grapheme iteration); add case folding and word segmentation | |
+| 35 | `std/db/sqlite` | SQLite binding | Optional. Python and PHP ship one; most others rely on a library. |
+| 36 | `std/data/xml` | Pull parser and minimal DOM | Optional and declining in importance. Last priority. |
+
+**Deliberately not proposed:**
+
+* GUI toolkits.
+* Email, SMTP, FTP or telnet clients.
+* Mutable non-generic collections, or a linked-list type beyond the built-in
+  list.
+* Binary object serialisation.
+* Templating engines.
+* Audio and image codecs.
+
+These are deprecated across the comparison set, or they belong in packages.
+
+## 6. Blockers and design questions to raise upstream first
+
+1. **The data-structure stubs are upstream's own `Todo`s.** Daan Leijen likely
+   has views on representation (FBIP-friendly trees, `?cmp` versus explicit
+   comparators). Open a GitHub discussion before writing #3–#6.
+2. **No deriving or reflection.** JSON, hashing, equality and `show` for
+   user-defined types need either hand-written implicit instances or
+   compiler-generated ones. The README already lists "generate show / (==) for
+   datatypes" as an LSP task. A small derive mechanism would make #2, #17 and
+   #29 far more pleasant.
+3. **No package manager.** This is the reason to fold proven community
+   libraries into `std` rather than leaving them separate.
+4. **I/O abstraction.** Agree on `std/io/stream` (#26) and how it relates to
+   the libuv async port before extending files, processes and sockets.
+   Otherwise there will be two incompatible stacks.
+5. **Backends.** Each extern needs both C and JS implementations. For JS,
+   decide whether Node, the browser or both are in scope (issue #778). The C#
+   backend (`--target=cs`) is non-functional: codegen crashes on struct
+   matching, and the generated code doesn't compile under Mono `csc`. It only
+   supports the legacy `csc` command line from .NET Framework 4.x or Mono, not
+   the modern `dotnet` SDK. Treat it as out of scope.
+6. **Mutable fields.** The upstream roadmap notes these are needed for optimal
+   B-trees. That affects the long-term representation for #3.
+
+## 7. Suggested first contributions
+
+Small, self-contained and unblocked:
+
+1. `sort` for list and vector (#1). It closes issue #610.
+2. `std/text/encoding`: base64, hex and UTF-8 (#11).
+3. `std/os/file` and `std/os/dir` extensions (#12, #13), plus `eprintln` and
+   `exit` (#14, #15).
+4. `std/core/hash` (#2), then propose map, set and hashmap (#3, #4) in a design
+   discussion.
+5. `std/test` (#18), so that every later module ships with tests in Koka
+   itself.
