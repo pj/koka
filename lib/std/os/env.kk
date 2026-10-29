@@ -17,7 +17,6 @@ import std/os/path
 
 pub alias env = list<(string,string)>
 
-val environ : delayed<<ndet>,env> = delay{ os-get-env().list.to-tuples }
 
 fun to-tuples( xs : list<string> ) : env
   match(xs)
@@ -31,11 +30,27 @@ extern os-get-env() : ndet vector<string>    // vector as [name1,value1,...,name
 
 // Get the environment variables for this program
 pub fun get-env() : ndet env
-  environ.force
+  os-get-env().list.to-tuples
 
 // Returns the value of an environment variable `name` (or `Nothing` if not present)
 pub fun get-env-value( name : string ) : ndet maybe<string>
   get-env().lookup(fn(nm){ nm == name })
+
+// Set an environment variable for this process (and processes started from it).
+pub fun set-env( name : string, value : string ) : io ()
+  os-set-env(name, value)
+
+// Remove an environment variable from this process.
+pub fun unset-env( name : string ) : io ()
+  os-unset-env(name)
+
+extern os-set-env( name : string, value : string ) : io ()
+  c  inline "(setenv(kk_string_cbuf_borrow(#1,NULL,kk_context()),kk_string_cbuf_borrow(#2,NULL,kk_context()),1), kk_string_drop(#1,kk_context()), kk_string_drop(#2,kk_context()), kk_Unit)"
+  js inline "(typeof process !== 'undefined' ? (process.env[#1] = #2, $std_core_types._Unit_) : $std_core_types._Unit_)"
+
+extern os-unset-env( name : string ) : io ()
+  c  inline "(unsetenv(kk_string_cbuf_borrow(#1,NULL,kk_context())), kk_string_drop(#1,kk_context()), kk_Unit)"
+  js inline "(typeof process !== 'undefined' ? (delete process.env[#1], $std_core_types._Unit_) : $std_core_types._Unit_)"
 
 val argv : delayed<<ndet>,list<string>> =
   delay{ os-get-argv().list }

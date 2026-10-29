@@ -1,0 +1,18 @@
+"hello world\nsecond line\n"
+["hello world","second line"]
+("file",24,24,True)
+(True,False,True,False)
+[0,1,2,255,254,7]
+(False,True)
+False
+True
+["a.kk"]
+["a.kk","c.kk"]
+["a.kk","b.txt"]
+False
+error: cannot create existing dir
+False
+(True,True)
+True
+read error caught
+[(True,False,False),(False,True,False),(False,False,True),(False,False,True),(True,True,True)]
