@@ -311,3 +311,77 @@ Small, self-contained and unblocked:
    discussion.
 5. `std/test` (#18), so that every later module ships with tests in Koka
    itself.
+
+## 8. Implementation status (this fork)
+
+Everything below works on both the C and JavaScript (Node) backends. Each
+item has a test in `test/lib/` that passes under the official test harness
+(`cabal run koka-test`). `util/dev/kt.sh <test.kk>` runs a test on both
+backends and diffs the output against its `.out` file.
+
+| # | Module | Status |
+|---|---|---|
+| 1 | `std/core/list` sort | ✅ `sort`, `sort-by`, `sort-on`, `sort-desc`, `is-sorted`, `merge`, `dedup`, `group`, `group-by`, `vector/sort` (stable natural merge sort) |
+| 2 | `std/data/hash` | ✅ MurmurHash3-based `?hash`; deterministic and identical on C and JS |
+| 3 | `std/data/map`, `std/data/set` | ✅ Weight-balanced persistent trees: lookup, insert, remove, alter, union, intersection, difference, split, range queries, `elem-at` |
+| 4 | `std/data/hashmap`, `std/data/hashset` | ✅ Hash buckets in a `map<int,_>` (not a HAMT yet) |
+| 5 | `std/data/imap`, `iset`, `dict` | ✅ As aliases of `map<int,_>`, `set<int>` and `map<string,_>` (not Patricia trees) |
+| 6 | `std/data/array` | ❌ Not started (needs runtime and maintainer input) |
+| 7 | `std/data/deque`, `std/data/heap` | ✅ Banker's deque; pairing heap |
+| 8 | `std/core/seq` | ❌ Not started |
+| 9 | `std/text/builder` | ✅ `builder` value plus a `build { emit(..) }` effect |
+| 10 | `std/text/format` | ✅ `format("{} {:>8} {0:*^9}", args)` |
+| 11 | `std/text/encoding` | ✅ base64 (standard and URL-safe), hex, percent-encoding. UTF-8 was already in `core/bytes` |
+| 12–13 | `std/os/fs` | ✅ Binary read/write/append, `read-lines`, `file-info`, `path-exists`, `remove-file`, `rename`, `set-permissions`, `create-dir`, `remove-dir(-all)`, `set-cwd`, temp files and directories, `glob` |
+| 14 | `std/os/io` | ✅ `eprint(ln)`, `flush`, `read-stdin(-lines)`, `*-is-tty`, `exit` |
+| 15 | `std/os/process` | ✅ `run`, `run-bytes`, `run-output` (argv, stdin, cwd, env; captures exit code, stdout and stderr) |
+| 16 | `std/os/env` | ✅ `set-env`, `unset-env` · ❌ signals |
+| 17 | `std/data/json` | ✅ Parse (with line/column errors), compact and pretty output, accessors, `?json` encoding |
+| 18 | `std/test` | ✅ `run-tests`, `group`, `test`, `expect*`, `check-property` with generators |
+| 19 | `std/log` | ✅ `log` effect; stderr text/JSON, collect and ignore handlers; `with-log-fields` |
+| 20 | `std/crypto/hash` | ✅ SHA-256, SHA-1, HMAC, constant-time compare · ❌ BLAKE2/3 |
+| 21 | `std/compress` | ❌ |
+| 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
+| 23–27 | sockets, TLS, HTTP, streams, sync | ❌ (depend on the libuv `std/async` work) |
+| 28 | `std/data/csv` | ✅ |
+| 29 | `std/data/toml` | ❌ |
+| 30 | `std/data/uuid` | ✅ v4 and v7, parse and show |
+| 31–36 | rational/complex, bitset, pretty, unicode fixes, sqlite, xml | ❌ |
+
+### Platform limitations
+
+* The new C file-system and process primitives are POSIX only. On Windows they
+  return `ENOSYS`.
+* The JavaScript implementations need Node.js. In a browser they report an
+  error.
+
+### Upstream issues found along the way
+
+* `std/os/file` on the JS backend called `$std_core_exn.Ok`, which does not
+  exist, so `read-text-file` and `write-text-file` always failed. Fixed here.
+* `std/os/dir` and `std/os/process` had no JS implementation at all. Added
+  here.
+* `"/".path.string` is `"."`: the root directory is lost by `std/os/path`.
+  Not fixed.
+* At `-O1`, an inlined `char/hash('x')` (defined as `c.int.hash`) evaluated as
+  if the character were `0`. This looks like a compiler bug in inlining or
+  constant folding around `int32` conversions. It is worked around with
+  `noinline` in `std/data/hash`. To reproduce, revert that and run
+  `test/lib/hash1.kk` through `cabal run koka-test -- --match /lib/hash1/`.
+* `koka -o <absolute path>` fails with "could not find module".
+
+### Koka language gotchas hit while writing these modules
+
+* **Mutual recursion fails the termination checker.** Either add
+  `pretend-decreasing`, or give the functions the `div` effect and wrap the
+  public entry point in `pretend-no-div`.
+* **A polymorphic effect row can't be widened inside a function.** For example,
+  `fun test(body : () -> <exn|e> ()) : <testing|e> ()` cannot call
+  `report(..., catch(.., body))`. Write the body as `<exn,testing|e>`.
+  Handlers that re-emit their own effect need `<eff,eff|e>`.
+* **Constructors generate predicates.** `Empty` gives `is-empty` and `Symlink`
+  gives `is-symlink`, which clash with functions of the same name.
+* **Reserved words:** `exists`, `prefix` and `try` are keywords.
+* **Shadowing:** parameters named `all`, `default`, `fields` or `after` shadow
+  functions of the same name and give confusing type errors.
+* **Effectful guards aren't allowed.** Pattern guards must be total.
