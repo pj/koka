@@ -14,5 +14,4 @@ Just("42")
 42
 
 Nothing
-to stderr
 True

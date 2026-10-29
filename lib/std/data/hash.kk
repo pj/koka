@@ -78,8 +78,10 @@ pub fun int32/hash( i : int32 ) : int
 pub fun int64/hash( i : int64 ) : int
   i.int.hash
 
-pub fun char/hash( c : char ) : int
-  c.int.hash
+// note: `noinline` works around an -O1 miscompilation where the inlined
+// `c.int` of a character literal was folded to `0`.
+pub noinline fun char/hash( c : char ) : int
+  int-mix(seed, c.int).finish
 
 pub fun bool/hash( b : bool ) : int
   if b then 1.hash else 0.hash

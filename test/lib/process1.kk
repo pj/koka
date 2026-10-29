@@ -28,6 +28,5 @@ fun main()
   unset-env("KOKA_SET_TEST")
   println(get-env-value("KOKA_SET_TEST"))
   // stderr and tty
-  eprintln("to stderr")
   println(stdin-is-tty() || True)
   flush()

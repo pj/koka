@@ -1,0 +1,37 @@
+Just("koka")
+Just(2)
+(Just(3),Just(3.1415899999999999),Just(123456789012345678901234567890))
+(Just(True),True,True)
+Just("line\nbreak \"quoted\" \xE9 \U01F600 tab\t")
+["name","tags","version","pi","nested","esc"]
+{"name":"koka","tags":["fun","effects"],"version":3,"pi":3.14159,"nested":{"ok":true,"none":null,"big":123456789012345678901234567890},"esc":"line\nbreak \"quoted\" é 😀 tab\t"}
+True
+True
+{
+  "a": 1,
+  "b": [
+    1,
+    2
+  ],
+  "c": {}
+}
+True
+(True,False)
+[{"name":"ann","age":30,"email":"ann@example.com"},{"name":"bob","age":25,"email":null}]
+[Just("ann"),Just("bob")]
+{"name":"koka","version":4,"pi":3.14159}
+[[1,"a"],[2,"b"]]
+["\"a\\u0001b\"","null","1.5e+300","-0.25"]
+json parse error at line 1, column 1: unexpected end of input
+json parse error at line 1, column 2: expected a string key
+json parse error at line 1, column 4: unexpected character
+json parse error at line 1, column 6: expected ':'
+json parse error at line 1, column 1: leading zero
+json parse error at line 1, column 3: expected a digit after '.'
+json parse error at line 1, column 5: unterminated string
+json parse error at line 1, column 1: invalid literal
+json parse error at line 1, column 5: unexpected trailing characters
+json parse error at line 1, column 2: invalid escape
+json parse error at line 1, column 8: expected a string key
+Just("[1,2500.0,0,true]")
+(113343,True)
