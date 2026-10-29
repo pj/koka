@@ -1,0 +1,16 @@
+passed: 3
+failed: arith / wrong -- expected 7, but got 6
+failed: lists / bad property -- property "all small" failed for 90
+failed: lists / expect -- custom message
+6
+DEBUG starting n=3
+WARN large n n=3 note="two words"
+INFO done
+10
+["DEBUG starting n=1 req=42","INFO done req=42"]
+ann is 30 years old
+[     a] [b     ] [  c   ] [ba]
+00000042 ***mid*** {literal}
+format: missing argument 1
+format: invalid argument index "oops"
+..x
