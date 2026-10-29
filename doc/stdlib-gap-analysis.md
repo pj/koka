@@ -344,7 +344,7 @@ backends and diffs the output against its `.out` file.
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
 | 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable · ❌ UDP |
 | 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle or `SSL_CERT_FILE`); mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ TLS server, client certificates |
-| 25 | `std/async/os/http` | ✅ HTTP/1.1 client for `http` and `https` (`http-get`/`post`/`request`) and server (`http-serve`, keep-alive, plain `http`); Content-Length, chunked and read-to-close bodies · ❌ redirects, client connection reuse, HTTP/2 |
+| 25 | `std/async/os/http` | ✅ HTTP/1.1 client for `http` and `https` (`http-get`/`post`/`request`) and server (`http-serve`, keep-alive, plain `http`); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) · ❌ client connection reuse, HTTP/2 |
 | 26–27 | streams, sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ❌ |

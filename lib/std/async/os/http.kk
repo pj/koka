@@ -31,7 +31,7 @@
    Bodies are framed with `Content-Length`, `Transfer-Encoding: chunked`, or
    (for responses) by the server closing the connection. The server supports
    persistent (keep-alive) connections; the client sends one request per
-   connection.
+   connection and follows redirects.
 */
 module async/os/http
 
@@ -256,11 +256,46 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 // Client
 // ----------------------------------------------------------------------------
 
-// Send an HTTP request to `url` and return the response. Redirects are not followed.
-pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty ) : <async,exn,net> http-response
+// Send an HTTP request to `url` and return the response.
+//
+// Redirects (`301`, `302`, `303`, `307`, `308`) are followed up to
+// `max-redirects` times, after which an exception is raised. With
+// `max-redirects = 0` the redirect response itself is returned. As in browsers, a `303` (or a `301`/`302` after a `POST`) is
+// followed with a `GET` without a body, while `307` and `308` repeat the
+// original method and body. The `Authorization` and `Cookie` headers are
+// dropped when a redirect leads to a different origin.
+pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10 ) : <async,exn,net> http-response
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
+  if max-redirects <= 0 then send-request(method, u, headers, body)
+  else follow-redirects(method, u, headers, body, max-redirects)
+
+fun follow-redirects( method : string, u : url, headers : headers, body : bytes, redirects-left : int ) : <async,exn,net> http-response
+  val res = send-request(method, u, headers, body)
+  val is-redirect = res.status == 301 || res.status == 302 || res.status == 303 || res.status == 307 || res.status == 308
+  match res.header("Location")
+    Just(location) | is-redirect && redirects-left > 0 ->
+      val next = u.resolve(location.trim)
+      val to-get = res.status == 303 && method != "HEAD" || (res.status == 301 || res.status == 302) && method == "POST"
+      val (method', body', hs1) = if to-get
+        then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
+        else (method, body, headers)
+      val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
+      follow-redirects(method', next, hs2, body', pretend-decreasing(redirects-left - 1))
+    _ | is-redirect && res.header("Location").is-just ->
+      throw("http: too many redirects (the last one was to " ++ res.header("Location").default("").show ++ ")")
+    _ -> res
+
+fun remove-headers( hs : headers, names : list<string> ) : headers
+  val lnames = names.map(to-lower)
+  hs.filter(fn((n, _)) !lnames.any(fn(l) l == n.to-lower))
+
+fun same-origin( a : url, b : url ) : bool
+  a.scheme == b.scheme && a.host.to-lower == b.host.to-lower && a.effective-port == b.effective-port
+
+// Send one request (no redirects).
+fun send-request( method : string, u : url, headers : headers, body : bytes ) : <async,exn,net> http-response
   if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
@@ -291,12 +326,12 @@ fun read-response( r : reader, method : string ) : <async,exn> http-response
         Http-response(status, parts.drop(2).join(" "), hs, res-body)
 
 // `GET` a URL.
-pub fun http-get( url : string, headers : headers = [] ) : <async,exn,net> http-response
-  http-request("GET", url, headers)
+pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
+  http-request("GET", url, headers, max-redirects = max-redirects)
 
 // `POST` a body to a URL.
-pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [] ) : <async,exn,net> http-response
-  http-request("POST", url, headers.set-header("Content-Type", content-type), body)
+pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
+  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects)
 
 // `GET` a URL and return the body as text; raises an exception unless the status is 2xx.
 pub fun http-get-text( url : string ) : <async,exn,net> string

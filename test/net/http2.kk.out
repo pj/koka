@@ -1,0 +1,12 @@
+200 GET /inspect?from=found body="" auth=- type=-
+200 GET /inspect?from=found body="" auth=- type=-
+200 GET /inspect?from=found body="" auth=- type=-
+200 GET /inspect?from=see body="" auth=- type=-
+200 POST /inspect?from=temp body="data" auth=- type=text/plain
+200 PUT /inspect body="data" auth=- type=text/plain
+200 GET /inspect?from=found body="" auth=secret type=-
+200 GET /inspect body="" auth=- type=-
+302 /inspect?from=found
+http: too many redirects (the last one was to "/inspect?from=found")
+302 no location
+http: too many redirects (the last one was to "/loop")
