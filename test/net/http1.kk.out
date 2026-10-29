@@ -1,0 +1,8 @@
+(200,"hello koka lang","text/plain; charset=utf-8")
+(200,"some data","text/plain")
+(404,"no route for /missing","Not Found")
+(500,"internal server error: route failed","")
+(200,"True","200000")
+["HTTP/1.1 200 OK","hello oneHTTP/1.1 200 OK","hello two"]
+hello, world
+http: https is not supported yet (https://example.com/)

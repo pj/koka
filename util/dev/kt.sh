@@ -11,7 +11,7 @@ filter() { grep -vE '^(check|load|parse|compile|link|linking|created|library|war
 for f in "$@"; do
   dir="$(dirname "$f")"; base="$(basename "$f")"
   for target in c js; do
-    out=$(cd "$dir" && perl -e 'alarm shift; exec @ARGV' "${KT_TIMEOUT:-120}" "$KOKA" --target=$target --builddir="$ROOT/.koka/kt" -i"$ROOT/lib" -e "$base" 2>&1 | filter)
+    out=$(cd "$dir" && perl -e '$t=shift; $pid=fork; if(!$pid){ setpgrp(0,0); exec @ARGV } $SIG{ALRM}=sub{ kill(-9, $pid); print "TIMEOUT\n"; exit 124 }; alarm $t; waitpid($pid,0); exit($? >> 8)' "${KT_TIMEOUT:-120}" "$KOKA" --target=$target --builddir="$ROOT/.koka/kt" -i"$ROOT/lib" -e "$base" 2>&1 | filter)
     if [ $NEW = 1 ] && [ $target = c ]; then printf '%s\n' "$out" > "$f.out"; echo "wrote $f.out"; continue; fi
     if [ -f "$f.out" ] && diff -q <(printf '%s\n' "$out") "$f.out" >/dev/null; then
       echo "PASS [$target] $f"

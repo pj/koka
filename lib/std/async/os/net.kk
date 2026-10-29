@@ -161,13 +161,13 @@ pub fun tcp-server/close( srv : tcp-server ) : async ()
 // Serve connections forever: each accepted connection is handled by `on-conn`
 // in its own strand (and closed afterwards). Errors in a handler are reported
 // through `on-error` and do not stop the server.
-pub fun serve( srv : tcp-server, on-conn : tcp-socket -> <async,exn,ndet> (), on-error : exception -> <async,ndet> () = fn(_) () ) : <async,exn,ndet> ()
+pub fun serve( srv : tcp-server, on-conn : tcp-socket -> <async,exn,ndet|e> (), on-error : exception -> <async,ndet|e> () = fn(_) () ) : <async,exn,ndet|e> ()
   val conn = srv.accept
   interleaved({
-    catch(on-error) { 
-      with finally { conn.close }
-      on-conn(conn)
-    }
+    mask<exn>
+      catch(on-error)
+        with finally { conn.close }
+        on-conn(conn)
   }, {
     serve(pretend-decreasing(srv), on-conn, on-error)
   })
