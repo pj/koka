@@ -38,12 +38,13 @@
           pkgs.nodejs     # --target=js / jsnode
           libuv           # std/async event loop (C backend)
           pcre2           # std/text/regex (C backend)
+          pkgs.mbedtls    # std/async/os/tls (C backend); ships static libraries
         ];
 
         # koka checks that C libraries exist before linking, but only searches
         # fixed system paths; point it at the nix store (headers and link flags
         # are already provided by the nix cc-wrapper).
-        kokaOptions = "--cclibdir=${libuv}/lib;${pcre2.out}/lib";
+        kokaOptions = "--cclibdir=${libuv}/lib;${pcre2.out}/lib;${pkgs.mbedtls}/lib";
       in
       {
         devShells.default = pkgs.mkShell {

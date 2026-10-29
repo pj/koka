@@ -6,7 +6,7 @@
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
 
-/* HTTP/1.1 client and server (over plain TCP; `https` is not supported yet).
+/* HTTP/1.1 client (`http` and `https`) and server (plain `http`).
 
    ```
    import std/async
@@ -38,6 +38,7 @@ module async/os/http
 import std/core/undiv
 import async/async
 import async/os/net
+import async/os/tls
 import std/net/url
 import std/text/encoding
 
@@ -143,7 +144,7 @@ pub fun bytes-response( status : int, body : bytes, content-type : string, heade
 
 // A socket with not-yet-consumed input.
 value struct reader
-  sock : tcp-socket
+  sock : net-stream
   buf : bytes
 
 fun byte-at( b : bytes, i : int ) : int
@@ -246,7 +247,7 @@ fun read-body( r : reader, hs : headers, until-eof : bool ) : <async,exn> (bytes
 fun head-text( start-line : string, hs : headers ) : string
   start-line ++ "\r\n" ++ hs.map(fn((n, v)) n ++ ": " ++ v ++ "\r\n").join ++ "\r\n"
 
-fun write-message( s : tcp-socket, start-line : string, hs : headers, body : bytes ) : <async,exn> ()
+fun write-message( s : net-stream, start-line : string, hs : headers, body : bytes ) : <async,exn> ()
   val hs' = if hs.header("Content-Length").is-just || hs.header("Transfer-Encoding").is-just then hs
             else hs.set-header("Content-Length", body.length.show)
   s.write-all(head-text(start-line, hs').bytes ++ body)
@@ -260,14 +261,14 @@ pub fun http-request( method : string, url : string, headers : headers = [], bod
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
-  if u.scheme == "https" then throw("http: https is not supported yet (" ++ url ++ ")")
-  if u.scheme != "http" then throw("http: unsupported url scheme " ++ u.scheme.show)
+  if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
   val host-header = if u.port.is-just then u.host ++ ":" ++ conn-port.show else u.host
   val hs0 = headers.set-header("Host", host-header).set-header("Connection", "close")
   val hs = if hs0.header("User-Agent").is-just then hs0 else hs0.set-header("User-Agent", "koka-http")
-  with s = tcp-connect(u.host, conn-port)
+  val s = if u.scheme == "https" then tls-connect(u.host, conn-port) else plain-stream(tcp-connect(u.host, conn-port))
+  with finally { s.close }
   write-message(s, method ++ " " ++ target ++ " HTTP/1.1", hs, body)
   read-response(Reader(s, bytes/empty), method)
 
@@ -312,7 +313,7 @@ pub fun http-get-text( url : string ) : <async,exn,net> string
 // An exception in `on-request` results in a `500` response.
 pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response ) : <async,exn,ndet|e> ()
   srv.serve fn(conn)
-    serve-connection(Reader(conn, bytes/empty), on-request)
+    serve-connection(Reader(plain-stream(conn), bytes/empty), on-request)
 
 fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e> http-response ) : <async,exn,ndet|e> ()
   match r.read-until(crlfcrlf, 64 * 1024)

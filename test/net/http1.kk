@@ -47,4 +47,4 @@ fun main()
   })
   println(chunked)
   rawsrv.close
-  println(catch(fn(e) e.message, { http-get("https://example.com/").body-text }))
+  println(catch(fn(e) e.message, { http-get("ftp://example.com/").body-text }))

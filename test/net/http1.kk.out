@@ -5,4 +5,4 @@
 (200,"True","200000")
 ["HTTP/1.1 200 OK","hello oneHTTP/1.1 200 OK","hello two"]
 hello, world
-http: https is not supported yet (https://example.com/)
+http: unsupported url scheme "ftp"

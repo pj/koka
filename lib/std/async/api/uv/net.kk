@@ -58,3 +58,13 @@ pub extern net-address( sock : any, peer : bool ) : ioc (string, int)
 pub extern net-set-nodelay( sock : any, enable : bool ) : ioc ()
   c  "kk_net_set_nodelay"
   js "kk_net_set_nodelay"
+
+// Connect with TLS natively (Node.js only); returns a socket usable with the other primitives.
+pub extern net-tls-connect-setup( evloop : any, host : string, port : int32, verify : bool, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
+  c  "kk_net_tls_connect_setup"
+  js "kk_net_tls_connect_setup"
+
+// Is TLS provided natively by the host (Node.js)? Otherwise use the `uv/tls` engine.
+pub extern net-has-native-tls() : bool
+  c  inline "false"
+  js inline "true"
