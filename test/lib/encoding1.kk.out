@@ -1,0 +1,14 @@
+["","Zg==","Zm8=","Zm9v","Zm9vYg==","Zm9vYmE=","Zm9vYmFy"]
+[Just(""),Just("f"),Just("fo"),Just("foo"),Just("foob"),Just("fooba"),Just("foobar")]
+[Just("f"),Just("fo"),Just("foobar")]
+(True,True)
+//79 __79 /w
+True
+True
+("48656c6c6f","000F10FF")
+(Just("Hello"),Just("Hel"),True,True)
+("a%20b%26c%3Dd%2F%C3%A9~","/path%20with/space")
+(Just("a b&c"),Just("a b"),Just("\u20AC"),Nothing)
+hello, world! ?
+<ul><li>1</li><li>2</li><li>3</li></ul>
+10000
