@@ -31,15 +31,24 @@
    For `https`, give the server a TLS configuration:
    `http-serve(server, handler, tls = Just(tls-server-config(cert, key)))`.
 
+   The plain client functions open a new connection for each request. To
+   reuse connections (keep-alive), make requests through an `:http-client`:
+
+   ```
+   with client = http-client()
+   val a = client.http-get("http://127.0.0.1:8080/hello")
+   val b = client.http-get("http://127.0.0.1:8080/hello?name=again")   // same connection
+   ```
+
    Bodies are framed with `Content-Length`, `Transfer-Encoding: chunked`, or
    (for responses) by the server closing the connection. The server supports
-   persistent (keep-alive) connections; the client sends one request per
-   connection and follows redirects.
+   persistent (keep-alive) connections. The client follows redirects.
 */
 module async/os/http
 
 import std/core/undiv
 import async/async
+import async/internal
 import async/os/net
 import async/os/tls
 import std/net/url
@@ -58,6 +67,7 @@ pub struct http-request
   target : string = "/"        // the request target: path and query, e.g. `/search?q=koka`
   headers : headers = []
   body : bytes = bytes/empty
+  peer : string = ""           // on the server: the address of the client as `ip:port`
 
 // An HTTP response.
 pub struct http-response
@@ -259,26 +269,31 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 // Client
 // ----------------------------------------------------------------------------
 
-// Send an HTTP request to `url` and return the response.
+// Send an HTTP request to `url` and return the response. A new connection is
+// used for each request; see `:http-client` to reuse connections.
 //
 // Redirects (`301`, `302`, `303`, `307`, `308`) are followed up to
 // `max-redirects` times, after which an exception is raised. With
-// `max-redirects = 0` the redirect response itself is returned. As in browsers, a `303` (or a `301`/`302` after a `POST`) is
-// followed with a `GET` without a body, while `307` and `308` repeat the
-// original method and body. The `Authorization` and `Cookie` headers are
-// dropped when a redirect leads to a different origin.
+// `max-redirects = 0` the redirect response itself is returned. As in
+// browsers, a `303` (or a `301`/`302` after a `POST`) is followed with a `GET`
+// without a body, while `307` and `308` repeat the original method and body.
+// The `Authorization` and `Cookie` headers are dropped when a redirect leads
+// to a different origin.
 //
 // For `https`, the server certificate is checked against the system CA
 // certificates, or only against `tls-ca` (PEM certificates) if it is given.
 pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
+  request-url(Nothing, method, url, headers, body, max-redirects, tls-ca)
+
+fun request-url( client : maybe<http-client>, method : string, url : string, headers : headers, body : bytes, max-redirects : int, tls-ca : string ) : <async,exn,net> http-response
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
-  if max-redirects <= 0 then send-request(method, u, headers, body, tls-ca)
-  else follow-redirects(method, u, headers, body, max-redirects, tls-ca)
+  if max-redirects <= 0 then send-request(client, method, u, headers, body, tls-ca)
+  else follow-redirects(client, method, u, headers, body, max-redirects, tls-ca)
 
-fun follow-redirects( method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls-ca : string ) : <async,exn,net> http-response
-  val res = send-request(method, u, headers, body, tls-ca)
+fun follow-redirects( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls-ca : string ) : <async,exn,net> http-response
+  val res = send-request(client, method, u, headers, body, tls-ca)
   val is-redirect = res.status == 301 || res.status == 302 || res.status == 303 || res.status == 307 || res.status == 308
   match res.header("Location")
     Just(location) | is-redirect && redirects-left > 0 ->
@@ -288,7 +303,7 @@ fun follow-redirects( method : string, u : url, headers : headers, body : bytes,
         then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
         else (method, body, headers)
       val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
-      follow-redirects(method', next, hs2, body', pretend-decreasing(redirects-left - 1), tls-ca)
+      follow-redirects(client, method', next, hs2, body', pretend-decreasing(redirects-left - 1), tls-ca)
     _ | is-redirect && res.header("Location").is-just ->
       throw("http: too many redirects (the last one was to " ++ res.header("Location").default("").show ++ ")")
     _ -> res
@@ -300,20 +315,49 @@ fun remove-headers( hs : headers, names : list<string> ) : headers
 fun same-origin( a : url, b : url ) : bool
   a.scheme == b.scheme && a.host.to-lower == b.host.to-lower && a.effective-port == b.effective-port
 
-// Send one request (no redirects).
-fun send-request( method : string, u : url, headers : headers, body : bytes, tls-ca : string ) : <async,exn,net> http-response
+fun is-idempotent( method : string ) : bool
+  match method
+    "GET" -> True
+    "HEAD" -> True
+    "OPTIONS" -> True
+    "TRACE" -> True
+    "PUT" -> True
+    "DELETE" -> True
+    _ -> False
+
+// Send one request (no redirects), on a pooled connection if there is a client.
+fun send-request( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, tls-ca : string ) : <async,exn,net> http-response
   if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
   val host-header = if u.port.is-just then u.host ++ ":" ++ conn-port.show else u.host
-  val hs0 = headers.set-header("Host", host-header).set-header("Connection", "close")
-  val hs = if hs0.header("User-Agent").is-just then hs0 else hs0.set-header("User-Agent", "koka-http")
-  val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls-ca) else plain-stream(tcp-connect(u.host, conn-port))
-  with finally { s.close }
-  write-message(s, method ++ " " ++ target ++ " HTTP/1.1", hs, body)
-  read-response(Reader(s, bytes/empty), method)
+  val hs0 = headers.set-header("Host", host-header)
+  val hs1 = if client.is-just then hs0 else hs0.set-header("Connection", "close")
+  val hs = if hs1.header("User-Agent").is-just then hs1 else hs1.set-header("User-Agent", "koka-http")
+  val start-line = method ++ " " ++ target ++ " HTTP/1.1"
+  fun connect() : <async,exn,net> net-stream
+    if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls-ca) else plain-stream(tcp-connect(u.host, conn-port))
+  match client
+    Nothing ->
+      val s = connect()
+      with finally { s.close }
+      write-message(s, start-line, hs, body)
+      val (res, _, _) = read-response(Reader(s, bytes/empty), method)
+      res
+    Just(c) ->
+      val key = u.scheme ++ "://" ++ u.host.to-lower ++ ":" ++ conn-port.show ++ " " ++ tls-ca
+      // an idle connection may have been closed by the server in the meantime:
+      // then an idempotent request is retried on a new connection
+      val on-idle = match c.take-idle(key)
+        Just(s) -> c.exchange(key, s, method.is-idempotent, start-line, hs, body, method)
+        Nothing -> Nothing
+      match on-idle
+        Just(res) -> res
+        Nothing -> match c.exchange(key, connect(), False, start-line, hs, body, method)
+          Just(res) -> res
+          Nothing -> impossible("http: exchange on a new connection")
 
-fun read-response( r : reader, method : string ) : <async,exn> http-response
+fun read-response( r : reader, method : string ) : <async,exn> (http-response, reader, bool)
   match r.read-until(crlfcrlf, 64 * 1024)
     Nothing -> throw("http: connection closed before the response")
     Just((head-bytes, r1)) ->
@@ -328,8 +372,112 @@ fun read-response( r : reader, method : string ) : <async,exn> http-response
       else
         val hs = parse-headers(lines.drop(1))
         val no-body = method == "HEAD" || status == 204 || status == 304
-        val (res-body, _) = if no-body then (bytes/empty, r1) else r1.read-body(hs, True)
-        Http-response(status, parts.drop(2).join(" "), hs, res-body)
+        val (res-body, r2) = if no-body then (bytes/empty, r1) else r1.read-body(hs, True)
+        // can the connection be used for another request?
+        val conn = hs.header("Connection").default("").to-lower
+        val framed = no-body || hs.header("Content-Length").is-just || hs.header("Transfer-Encoding").default("").to-lower.contains("chunked")
+        val reusable = framed && !conn.contains("close") && (parts.head == Just("HTTP/1.1") || conn.contains("keep-alive"))
+        (Http-response(status, parts.drop(2).join(" "), hs, res-body), r2, reusable)
+
+// ----------------------------------------------------------------------------
+// Clients with connection reuse
+// ----------------------------------------------------------------------------
+
+value struct idle-conn
+  origin : string       // scheme, host, port, and CA
+  stream : net-stream
+
+// An HTTP client that keeps connections open (keep-alive) and reuses them for
+// later requests to the same scheme, host and port. It can be used by several
+// strands at once; each request uses its own connection.
+abstract struct http-client
+  idle : ref<global,list<idle-conn>>
+  max-idle : int
+
+// (a signature is needed here: inferring the effect of reading the ref fails)
+fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-conn>
+  !r
+
+// Create a client that keeps up to `max-idle-per-host` idle connections per
+// host open. Close it with `close` (or use `with client = http-client()`).
+pub fun http-client( max-idle-per-host : int = 4 ) : async http-client
+  async-ioc { Http-client(ref([]), max-idle-per-host) }
+
+// Create a client, run `action` with it, and close it afterwards.
+pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4 ) : <async,exn|e> a
+  val c = http-client(max-idle-per-host)
+  with finally { c.close }
+  action(c)
+
+// Close all idle connections. The client can still be used afterwards.
+pub fun http-client/close( c : http-client ) : async ()
+  val conns = async-ioc
+    val r : ref<global,list<idle-conn>> = c.idle
+    val xs = read-idle(r)
+    r := []
+    xs
+  conns.foreach(fn(ic) ic.stream.close)
+
+fun take-idle( c : http-client, key : string ) : async maybe<net-stream>
+  async-ioc
+    val r : ref<global,list<idle-conn>> = c.idle
+    val (found, rest) = remove-first(read-idle(r), key)
+    r := rest
+    found
+
+fun remove-first( xs : list<idle-conn>, key : string ) : (maybe<net-stream>, list<idle-conn>)
+  match xs
+    Cons(ic, rest) ->
+      if ic.origin == key then (Just(ic.stream), rest)
+      else
+        val (found, rest') = remove-first(rest, key)
+        (found, Cons(ic, rest'))
+    Nil -> (Nothing, Nil)
+
+fun put-idle( c : http-client, key : string, s : net-stream ) : async ()
+  val stored = async-ioc
+    val r : ref<global,list<idle-conn>> = c.idle
+    val xs = read-idle(r)
+    if xs.filter(fn(ic) ic.origin == key).length >= c.max-idle then False
+    else
+      r := Cons(Idle-conn(key, s), xs)
+      True
+  if !stored then s.close
+
+// Send a request on `s` and read the response; afterwards the connection is
+// put back in the pool if it can be reused, and closed otherwise (also on
+// errors and cancelation). With `can-retry`, returns `Nothing` if the
+// connection turns out to be closed before any response arrives.
+fun exchange( c : http-client, key : string, s : net-stream, can-retry : bool,
+              start-line : string, hs : headers, body : bytes, method : string ) : <async,exn> maybe<http-response>
+  val keep : ref<global,bool> = async-ioc { ref(False) }
+  with finally
+    val reuse = async-ioc { !keep }
+    if reuse then c.put-idle(key, s) else s.close
+  val started = catch(fn(exn) Error(exn), {
+    write-message(s, start-line, hs, body)
+    Ok(Reader(s, bytes/empty).fill)
+  })
+  match started
+    Ok((True, r)) ->
+      val (res, rest, reusable) = read-response(r, method)
+      if reusable && rest.buf.is-empty then async-ioc { keep := True }
+      Just(res)
+    _ | can-retry -> Nothing
+    Ok(_) -> throw("http: connection closed before the response")
+    Error(exn) -> throw-exn(exn)
+
+// Send an HTTP request through the client (see `http-request`).
+pub fun client/http-request( c : http-client, method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
+  request-url(Just(c), method, url, headers, body, max-redirects, tls-ca)
+
+// `GET` a URL through the client.
+pub fun client/http-get( c : http-client, url : string, headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
+  request-url(Just(c), "GET", url, headers, bytes/empty, max-redirects, tls-ca)
+
+// `POST` a body to a URL through the client.
+pub fun client/http-post( c : http-client, url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
+  request-url(Just(c), "POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca)
 
 // `GET` a URL.
 pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
@@ -373,9 +521,11 @@ fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e
         [method, target, version] ->
           val hs = parse-headers(lines.drop(1))
           val (req-body, r2) = r1.read-body(hs, False)
-          val req = Http-request(method, target, hs, req-body)
+          val (peer-ip, peer-port) = r.sock.peer-address
+          val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show)
           val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { on-request(req) }) }
           val keep-alive = match hs.header("Connection").map(to-lower)
+            _ | res.header("Connection").map(to-lower) == Just("close") -> False
             Just("close") -> False
             Just("keep-alive") -> True
             _ -> version == "HTTP/1.1"

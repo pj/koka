@@ -345,7 +345,7 @@ backends and diffs the output against its `.out` file.
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
 | 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable · ❌ UDP |
 | 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle, `SSL_CERT_FILE`, or an explicit `ca`); TLS server: `tls-server-config` (PEM certificate chain and key) and `tls-accept` on accepted connections; mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ client certificates, SNI-based certificate selection, ALPN |
-| 25 | `std/async/os/http` | ✅ HTTP/1.1 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA (`tls-ca`) · ❌ client connection reuse, HTTP/2 |
+| 25 | `std/async/os/http` | ✅ HTTP/1.1 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA (`tls-ca`); `http-client` reuses keep-alive connections (per-host idle pool, idempotent requests retried once on a stale connection); the server reports the client address (`peer`) and honours `Connection: close` from a handler · ❌ idle connection timeouts, HTTP/2 |
 | 26–27 | streams, sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ❌ |
@@ -384,6 +384,11 @@ backends and diffs the output against its `.out` file.
   ignores it). The networking and process bindings now ignore it.
 * Koka does not rebuild a module when only its `extern import` C file
   changes; touch the `.kk` file to force it.
+* Type inference crashed with `internal error: no empty iconstraints` (an
+  unsolved `hdiv` constraint) on `!r` for a `ref<global,list<t>>` read
+  inside `async-ioc`, where `t` is a struct holding an `any`. Annotating the
+  ref did not help. The workaround is a top-level helper with an explicit
+  `<read<global>,div>` signature (`read-idle` in `std/async/os/http`).
 * `koka -o <absolute path>` fails with "could not find module".
 * On the JS backend, `bytes.subbytes(start, len)` called `slice(start, len)`,
   but `slice` takes an end index, so any slice with `start > 0` was wrong.

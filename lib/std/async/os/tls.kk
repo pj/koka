@@ -129,6 +129,10 @@ fun handshake( sock : tcp-socket, t : any ) : <async,exn> ()
     handshake(sock, pretend-decreasing(t))
   else throw(async-ioc { tls-error(t) })
 
+// The remote `(ip, port)` of the stream.
+pub fun net-stream/peer-address( s : net-stream ) : async (string, int)
+  s.sock.peer-address
+
 // Read the next chunk of data; empty bytes at the end of the stream.
 pub fun net-stream/read( s : net-stream ) : <async,exn> bytes
   match s.engine

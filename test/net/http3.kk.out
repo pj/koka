@@ -1,0 +1,9 @@
+sequential: 200,200,200,200 on 1 connection(s)
+close: 2 connection(s)
+concurrent: 3, then 3
+plain: 2
+after close: 2
+req-1
+req-2
+post on a stale connection: failed
+req-3
