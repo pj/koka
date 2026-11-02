@@ -26,10 +26,34 @@ pub import std/os/path
 pub import std/os/process
 pub import std/os/readline
 pub import std/os/task
+pub import std/os/fs
+pub import std/os/io
 
 pub import std/text/parse
 pub import std/text/regex
 pub import std/text/unicode
+pub import std/text/builder
+pub import std/text/encoding
+pub import std/text/format
+
+pub import std/data/map
+pub import std/data/set
+pub import std/data/hash
+pub import std/data/hashmap
+pub import std/data/hashset
+pub import std/data/imap
+pub import std/data/iset
+pub import std/data/dict
+pub import std/data/deque
+pub import std/data/heap
+pub import std/data/json
+pub import std/data/csv
+pub import std/data/uuid
+
+pub import std/net/url
+pub import std/crypto/hash
+pub import std/log
+pub import std/test
 
 pub import std/num/int32
 pub import std/num/int64
@@ -50,6 +74,11 @@ pub import std/async/async
 pub import std/async/channel
 pub import std/async/interleave
 pub import std/async/os/file
+pub import std/async/os/net
+pub import std/async/os/tls
+pub import std/async/os/http
+pub import std/async/os/process
+pub import std/async/os/udp
 
 pub fun main()
   println("toc")
