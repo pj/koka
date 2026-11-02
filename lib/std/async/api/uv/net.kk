@@ -5,8 +5,9 @@
   terms of the Apache License, Version 2.0. A copy of the License can be
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
-// Primitive TCP and child process bindings (libuv on C, `net` and `child_process`
-// on Node.js); see `std/async/os/net` and `std/async/os/process` for the public API.
+// Primitive TCP, UDP and child process bindings (libuv on C, `net` and `child_process`
+// on Node.js); see `std/async/os/net`, `std/async/os/udp` and `std/async/os/process`
+// for the public API.
 module uv/net
 
 import std/num/int32
@@ -101,3 +102,27 @@ pub extern proc-pid( proc : any ) : ioc int32
 pub extern proc-close( proc : any ) : ioc ()
   c  "kk_proc_close"
   js "kk_proc_close"
+
+pub extern udp-bind-setup( evloop : any, ip : string, port : int32, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
+  c  "kk_udp_bind_setup"
+  js "kk_udp_bind_setup"
+
+pub extern udp-recv-setup( evloop : any, sock : any, cb : error<(bytes, string, int)> -> ioc () ) : ioc error<() -> ioc ()>
+  c  "kk_udp_recv_setup"
+  js "kk_udp_recv_setup"
+
+pub extern udp-send-setup( evloop : any, sock : any, data : bytes, ip : string, port : int32, cb : error<()> -> ioc () ) : ioc error<() -> ioc ()>
+  c  "kk_udp_send_setup"
+  js "kk_udp_send_setup"
+
+pub extern udp-close( sock : any ) : ioc ()
+  c  "kk_udp_close"
+  js "kk_udp_close"
+
+pub extern udp-address( sock : any ) : ioc (string, int)
+  c  "kk_udp_address"
+  js "kk_udp_address"
+
+pub extern udp-set-broadcast( sock : any, enable : bool ) : ioc error<()>
+  c  "kk_udp_set_broadcast"
+  js "kk_udp_set_broadcast"

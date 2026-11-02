@@ -6,7 +6,7 @@
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
 
-// TCP networking and child processes on libuv.
+// TCP and UDP networking and child processes on libuv.
 //
 // A socket (or server, or a pipe to a child process) is a `kk_net_sock_t` boxed as an opaque C pointer; it
 // must be closed explicitly with `kk_net_close`. Pending asynchronous
@@ -507,6 +507,186 @@ kk_unit_t kk_net_set_nodelay( kk_box_t bsock, bool enable, kk_context_t* ctx ) {
   kk_box_drop(bsock, ctx);
   uv_tcp_nodelay(&sock->tcp, enable ? 1 : 0);
   return kk_Unit;
+}
+
+// ---------------------------------------------------------------------------
+// UDP
+// ---------------------------------------------------------------------------
+
+typedef struct kk_udp_s {
+  uv_udp_t udp;                    // must be first
+  bool     has_recv_cb;
+  kk_function_t recv_cb;           // pending receive: `error<(bytes,string,int)> -> ioc ()`
+  bool     closing;
+} kk_udp_t;
+
+static kk_udp_t* kk_udp_unbox( kk_box_t b, kk_context_t* ctx ) {
+  return (kk_udp_t*)kk_cptr_unbox_borrowed(b, ctx);
+}
+
+static void kk_udp_deliver_recv( kk_udp_t* u, kk_std_core_exn__error res, kk_context_t* ctx ) {
+  if (!u->has_recv_cb) { kk_std_core_types__result_drop(res, ctx); return; }
+  kk_function_t cb = u->recv_cb;
+  u->has_recv_cb = false;
+  kk_function_call_error(cb, res, ctx);   // drops cb
+}
+
+// Bind a UDP socket to `ip` and `port` (`0` picks a free port); the result is delivered right away.
+kk_std_core_exn__error kk_udp_bind_setup( kk_uv_loop_t loop, kk_string_t ip, int32_t port, kk_function_t cb, kk_context_t* ctx ) {
+  struct sockaddr_storage addr;
+  int err = kk_net_sockaddr(ip, port, &addr, ctx);
+  kk_string_drop(ip, ctx);
+  if (err != 0) { kk_function_drop(cb, ctx); return kk_error_from_uv_errno(err, ctx); }
+  kk_udp_t* u = (kk_udp_t*)kk_zalloc(sizeof(kk_udp_t), ctx);
+  if (u == NULL) { kk_function_drop(cb, ctx); return kk_error_from_uv_errno(UV_ENOMEM, ctx); }
+  err = uv_udp_init(kk_uv_loop(loop, ctx), &u->udp);
+  if (err != 0) { kk_free(u, ctx); kk_function_drop(cb, ctx); return kk_error_from_uv_errno(err, ctx); }
+  err = uv_udp_bind(&u->udp, (const struct sockaddr*)&addr, 0);
+  if (err != 0) {
+    u->closing = true;
+    uv_close((uv_handle_t*)&u->udp, &kk_net_free_cb);
+    kk_function_drop(cb, ctx);
+    return kk_error_from_uv_errno(err, ctx);
+  }
+  kk_function_call_error(cb, kk_result_ok(kk_cptr_box(u, ctx), ctx), ctx);
+  return kk_result_uv_handle_dispose((uv_handle_t*)NULL, NULL, &kk_uv_handle_dispose, ctx);
+}
+
+static void kk_udp_recv_cb( uv_udp_t* handle, ssize_t nread, const uv_buf_t* buf, const struct sockaddr* addr, unsigned flags ) {
+  kk_unused(flags);
+  kk_context_t* ctx = kk_get_context();
+  kk_udp_t* u = (kk_udp_t*)handle;
+  if (nread == 0 && addr == NULL) {  // nothing more to read
+    if (buf->base != NULL) kk_free(buf->base, ctx);
+    return;
+  }
+  uv_udp_recv_stop(handle);   // we receive one datagram per request
+  kk_std_core_exn__error res;
+  if (nread < 0) {
+    res = kk_error_from_uv_errno((int)nread, ctx);
+  }
+  else {
+    struct sockaddr_storage from;
+    memset(&from, 0, sizeof(from));
+    if (addr != NULL) memcpy(&from, addr, (addr->sa_family == AF_INET6 ? sizeof(struct sockaddr_in6) : sizeof(struct sockaddr_in)));
+    int32_t port;
+    kk_string_t ip = kk_net_addr_string(&from, &port, ctx);
+    kk_bytes_t data = (nread == 0 ? kk_bytes_empty() : kk_bytes_alloc_dupn((kk_ssize_t)nread, (const uint8_t*)buf->base, ctx));
+    res = kk_result_ok(kk_std_core_types__tuple3_box(kk_std_core_types__new_Tuple3(kk_bytes_box(data), kk_string_box(ip),
+                         kk_integer_box(kk_integer_from_int(port, ctx), ctx), ctx), ctx), ctx);
+  }
+  if (buf->base != NULL) kk_free(buf->base, ctx);
+  kk_udp_deliver_recv(u, res, ctx);
+}
+
+static void kk_udp_recv_dispose( uv_handle_t* h, void* arg, kk_context_t* ctx ) {
+  kk_unused(arg);
+  kk_udp_t* u = (kk_udp_t*)h;
+  if (u->closing) return;
+  uv_udp_recv_stop(&u->udp);
+  if (u->has_recv_cb) {
+    u->has_recv_cb = false;
+    kk_function_drop(u->recv_cb, ctx);
+  }
+}
+
+// Receive the next datagram as `(data, sender-ip, sender-port)`.
+kk_std_core_exn__error kk_udp_recv_setup( kk_uv_loop_t loop, kk_box_t bu, kk_function_t cb, kk_context_t* ctx ) {
+  kk_unused(loop);
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  if (u->closing) { kk_function_drop(cb, ctx); return kk_net_closed_error(ctx); }
+  if (u->has_recv_cb) { kk_function_drop(cb, ctx); return kk_error_from_uv_errno(UV_EALREADY, ctx); }
+  u->recv_cb = cb;
+  u->has_recv_cb = true;
+  int err = uv_udp_recv_start(&u->udp, &kk_net_alloc_cb, &kk_udp_recv_cb);
+  if (err != 0) {
+    u->has_recv_cb = false;
+    kk_function_drop(u->recv_cb, ctx);
+    return kk_error_from_uv_errno(err, ctx);
+  }
+  return kk_result_uv_handle_dispose((uv_handle_t*)u, NULL, &kk_udp_recv_dispose, ctx);
+}
+
+typedef struct kk_udp_send_s {
+  uv_udp_send_t req;        // must be first
+  kk_bytes_t data;          // keep the data alive during the send
+  int status;
+} kk_udp_send_t;
+
+static void kk_udp_send_call( kk_function_t cb, uv_req_t* _req, kk_context_t* ctx ) {
+  kk_udp_send_t* req = (kk_udp_send_t*)_req;
+  kk_std_core_exn__error res = (req->status < 0 ? kk_error_from_uv_errno(req->status, ctx)
+                                                : kk_result_ok(kk_unit_box(kk_Unit), ctx));
+  kk_function_call_error(cb, res, ctx);
+}
+
+static void kk_udp_send_cb( uv_udp_send_t* _req, int status ) {
+  kk_udp_send_t* req = (kk_udp_send_t*)_req;
+  req->status = status;
+  kk_bytes_drop(req->data, kk_get_context());
+  req->data = kk_bytes_empty();
+  kk_uv_req_callback((uv_req_t*)req, &kk_udp_send_call);
+}
+
+// Send a datagram to `ip` and `port`.
+kk_std_core_exn__error kk_udp_send_setup( kk_uv_loop_t loop, kk_box_t bu, kk_bytes_t data, kk_string_t ip, int32_t port, kk_function_t cb, kk_context_t* ctx ) {
+  kk_unused(loop);
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  struct sockaddr_storage addr;
+  int err = kk_net_sockaddr(ip, port, &addr, ctx);
+  kk_string_drop(ip, ctx);
+  if (err == 0 && u->closing) err = UV_ECANCELED;
+  if (err != 0) { kk_bytes_drop(data, ctx); kk_function_drop(cb, ctx); return kk_error_from_uv_errno(err, ctx); }
+  kk_udp_send_t* req;
+  err = kk_uv_req_create(sizeof(kk_udp_send_t), cb, (uv_req_t**)&req, ctx);
+  if (err != 0) { kk_bytes_drop(data, ctx); return kk_error_from_uv_errno(err, ctx); }
+  req->data = data;
+  kk_ssize_t len = 0;
+  const uint8_t* base = kk_bytes_buf_borrow(data, &len, ctx);
+  uv_buf_t bufs[1];
+  bufs[0] = uv_buf_init((char*)base, (unsigned int)len);
+  err = uv_udp_send(&req->req, &u->udp, bufs, 1, (const struct sockaddr*)&addr, &kk_udp_send_cb);
+  if (err != 0) {
+    kk_bytes_drop(req->data, ctx);
+    req->data = kk_bytes_empty();
+    kk_uv_req_free((uv_req_t*)req, ctx);
+    return kk_error_from_uv_errno(err, ctx);
+  }
+  return kk_result_uv_req_dispose0((uv_req_t*)req, ctx);
+}
+
+kk_unit_t kk_udp_close( kk_box_t bu, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  if (!u->closing) {
+    u->closing = true;
+    uv_udp_recv_stop(&u->udp);
+    kk_udp_deliver_recv(u, kk_net_closed_error(ctx), ctx);
+    uv_close((uv_handle_t*)&u->udp, &kk_net_free_cb);
+  }
+  return kk_Unit;
+}
+
+kk_std_core_types__tuple2 kk_udp_address( kk_box_t bu, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  struct sockaddr_storage addr;
+  memset(&addr, 0, sizeof(addr));
+  int len = sizeof(addr);
+  uv_udp_getsockname(&u->udp, (struct sockaddr*)&addr, &len);
+  int32_t port;
+  kk_string_t ip = kk_net_addr_string(&addr, &port, ctx);
+  return kk_std_core_types__new_Tuple2(kk_string_box(ip), kk_integer_box(kk_integer_from_int(port, ctx), ctx), ctx);
+}
+
+kk_std_core_exn__error kk_udp_set_broadcast( kk_box_t bu, bool enable, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  int err = uv_udp_set_broadcast(&u->udp, enable ? 1 : 0);
+  if (err != 0) return kk_error_from_uv_errno(err, ctx);
+  return kk_result_ok(kk_unit_box(kk_Unit), ctx);
 }
 
 // TLS is implemented in Koka on top of the mbedtls engine for the C backend (see `tls.c`)

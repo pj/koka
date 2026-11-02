@@ -343,7 +343,8 @@ backends and diffs the output against its `.out` file.
 | 20 | `std/crypto/hash` | ✅ SHA-256, SHA-1, HMAC, constant-time compare · ❌ BLAKE2/3 |
 | 21 | `std/compress` | ❌ |
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
-| 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable · ❌ UDP |
+| 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable |
+| 23b | `std/async/os/udp` | ✅ UDP on libuv (C) and `dgram` (JS): `udp-bind`, `send-to` (IP or host name), `receive-from` with the sender address, `set-broadcast`, `local-address`; cancellable · ❌ multicast, connected UDP sockets |
 | 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle, `SSL_CERT_FILE`, or an explicit `ca`); TLS server: `tls-server-config` (PEM certificate chain and key) and `tls-accept` on accepted connections; mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ client certificates, SNI-based certificate selection, ALPN |
 | 25 | `std/async/os/http` | ✅ HTTP/1.1 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA (`tls-ca`); `http-client` reuses keep-alive connections (per-host idle pool, idempotent requests retried once on a stale connection); the server reports the client address (`peer`) and honours `Connection: close` from a handler · ❌ idle connection timeouts, HTTP/2 |
 | 26–27 | streams, sync | ❌ |
@@ -382,6 +383,10 @@ backends and diffs the output against its `.out` file.
 * The libuv bindings did not ignore `SIGPIPE`, so writing to a closed socket
   or to a child that exited killed the whole program on the C backend (Node
   ignores it). The networking and process bindings now ignore it.
+* The modules added in this fork were missing from `lib/toc.kk`, which the
+  test harness compiles before running tests in parallel. Tests then compiled
+  them concurrently into one build directory, which occasionally truncated a
+  `.kki` file and failed a random test. They are listed now.
 * Koka does not rebuild a module when only its `extern import` C file
   changes; touch the `.kk` file to force it.
 * Type inference crashed with `internal error: no empty iconstraints` (an
