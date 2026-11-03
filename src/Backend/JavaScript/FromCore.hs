@@ -369,9 +369,18 @@ tryTailCall result expr
     genOverride :: [TName] -> [Expr] -> Asm Doc
     genOverride params args
       = fmap (debugWrap "genOverride") $
-        do (stmts, varNames) <- do args' <- mapM tailCallArg args
-                                   bs    <- mapM genVarBinding args'
-                                   return (unzip bs)
+        do (stmts, varNames0) <- do args' <- mapM tailCallArg args
+                                    bs    <- mapM genVarBinding args'
+                                    return (unzip bs)
+           -- an argument that is itself one of the parameters (in another position, as in
+           -- `f(b,a)` or `f(i+1,i)`) must be read before the parameters are overwritten
+           (copies, varNames) <- fmap unzip $ mapM (\(p,v) ->
+                                    if (v /= p && v `elem` params)
+                                      then do name <- newVarName "x"
+                                              vdoc <- genTName v
+                                              return (text "var" <+> ppName name <+> text "=" <+> vdoc <.> semi, TName name (typeOf v))
+                                      else return (empty, v)
+                                  ) (zip params varNames0)
            docs1             <- mapM genTName params
            docs2             <- mapM genTName varNames
            let assigns    = map (\(p,a)-> if p == a
@@ -379,7 +388,7 @@ tryTailCall result expr
                                             else debugComment ("genOverride: preparing tailcall") <.> p <+> text "=" <+> a <.> semi
                                 ) (zip docs1 docs2)
            return $
-             linecomment (text "tail call") <-> vcat stmts <-> vcat assigns
+             linecomment (text "tail call") <-> vcat stmts <-> vcat copies <-> vcat assigns
 
     -- if local variables are captured inside a tailcalling function argument,
     -- we need to capture it by value (instead of reference since we will overwrite the local variables on a tailcall)

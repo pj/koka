@@ -380,6 +380,12 @@ backends and diffs the output against its `.out` file.
   built on `serve` leaked the open connections when it was canceled. Fixed
   in `std/async/interleave` (test: `test/async/interleave-finally.kk`); this
   also affects upstream with PR #955.
+* **JavaScript backend miscompiled self tail calls** whose arguments are other
+  parameters: the loop assigned the parameters one by one, so
+  `f(b, a, n - 1)` became `a = b; b = a` and `go(xs, i + 1, i)` read the
+  already incremented `i`. Found through the HPACK encoder. Fixed in
+  `Backend/JavaScript/FromCore.hs` (`genOverride` copies such arguments
+  first); test: `test/jsgen/tailcall-args.kk`.
 * The libuv bindings did not ignore `SIGPIPE`, so writing to a closed socket
   or to a child that exited killed the whole program on the C backend (Node
   ignores it). The networking and process bindings now ignore it.
