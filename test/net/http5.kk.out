@@ -1,0 +1,12 @@
+versions: HTTP/2, HTTP/2, HTTP/2 on 1 connection(s)
+multiplexed: 8 responses on 1 connection(s)
+download: True, upload: True, concurrent uploads: [1600000,1600000,1600000]
+exception: 500 internal server error: handler failed
+redirect: 200 HTTP/2 GET /peer
+head: 200 0
+after the idle timeout: 200 HTTP/2, new connection: True
+plain request: HTTP/1.1
+tls: HTTP/2, HTTP/2, HTTP/2, HTTP/2 on 1 connection(s)
+client certificate: CN=Koka Test Client
+download: True
+without http2: HTTP/1.1, client certificate: none

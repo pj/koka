@@ -55,8 +55,10 @@ import std/time/timer
 import async/async
 import async/internal
 import async/interleave
+import async/channel
 import async/os/net
 import async/os/tls
+import async/os/http2
 import std/net/url
 import std/text/encoding
 
@@ -75,6 +77,7 @@ pub struct http-request
   body : bytes = bytes/empty
   peer : string = ""           // on the server: the address of the client as `ip:port`
   client-cert : string = ""    // on the server: the subject of the client certificate (`https` with `client-ca`), if any
+  version : string = "HTTP/1.1" // on the server: the protocol of the request (`"HTTP/1.1"` or `"HTTP/2"`)
 
 // An HTTP response.
 pub struct http-response
@@ -82,6 +85,7 @@ pub struct http-response
   reason : string = ""
   headers : headers = []
   body : bytes = bytes/empty
+  version : string = "HTTP/1.1"   // on the client: the protocol of the response (`"HTTP/1.1"` or `"HTTP/2"`)
 
 // Look up a header (case-insensitive).
 pub fun header( hs : headers, name : string ) : maybe<string>
@@ -293,7 +297,7 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 // A client certificate (`tls-cert`, PEM) and its private key (`tls-key`) are
 // presented to servers that ask for one.
 pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10,
-                      tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net> http-response
+                      tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net,ndet> http-response
   request-url(Nothing, method, url, headers, body, max-redirects, Tls-opts(tls-ca, tls-cert, tls-key))
 
 // TLS settings of a client
@@ -302,14 +306,14 @@ value struct tls-opts
   cert : string
   key : string
 
-fun request-url( client : maybe<http-client>, method : string, url : string, headers : headers, body : bytes, max-redirects : int, tls : tls-opts ) : <async,exn,net> http-response
+fun request-url( client : maybe<http-client>, method : string, url : string, headers : headers, body : bytes, max-redirects : int, tls : tls-opts ) : <async,exn,net,ndet> http-response
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
   if max-redirects <= 0 then send-request(client, method, u, headers, body, tls)
   else follow-redirects(client, method, u, headers, body, max-redirects, tls)
 
-fun follow-redirects( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls : tls-opts ) : <async,exn,net> http-response
+fun follow-redirects( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls : tls-opts ) : <async,exn,net,ndet> http-response
   val res = send-request(client, method, u, headers, body, tls)
   val is-redirect = res.status == 301 || res.status == 302 || res.status == 303 || res.status == 307 || res.status == 308
   match res.header("Location")
@@ -343,7 +347,7 @@ fun is-idempotent( method : string ) : bool
     _ -> False
 
 // Send one request (no redirects), on a pooled connection if there is a client.
-fun send-request( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, tls : tls-opts ) : <async,exn,net> http-response
+fun send-request( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, tls : tls-opts ) : <async,exn,net,ndet> http-response
   if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
@@ -362,17 +366,53 @@ fun send-request( client : maybe<http-client>, method : string, u : url, headers
       val (res, _, _) = read-response(Reader(s, bytes/empty), method)
       res
     Just(c) ->
-      val key = u.scheme ++ "://" ++ u.host.to-lower ++ ":" ++ conn-port.show
-      // an idle connection may have been closed by the server in the meantime:
-      // then an idempotent request is retried on a new connection
-      val on-idle = match c.take-idle(key)
-        Just(s) -> c.exchange(key, s, method.is-idempotent, start-line, hs, body, method)
+      val origin = u.scheme ++ "://" ++ u.host.to-lower ++ ":" ++ conn-port.show
+      val use-h2 = (u.scheme == "https" && c.http2) || (u.scheme == "http" && c.h2c)
+      fun on-h2( h : h2conn ) : <async,exn,ndet> maybe<http-response>
+        match h.h2-request(method, u.scheme, host-header, target, hs, body)
+          Just((status, rhs, rbody)) -> Just(Http-response(status, reason-phrase(status), rhs, rbody, "HTTP/2"))
+          Nothing -> Nothing   // refused by the server (it is closing the connection): try a new one
+      // an open HTTP/2 connection to the origin; if another request is
+      // connecting to it, wait for that first
+      val dialer = use-h2 && c.find-h2(origin).is-nothing && c.begin-dial(origin, 0)
+      val on-existing = if !use-h2 || dialer then Nothing else match c.find-h2(origin)
+        Just(h) -> on-h2(h)
         Nothing -> Nothing
-      match on-idle
+      match on-existing
         Just(res) -> res
-        Nothing -> match c.exchange(key, connect(), False, start-line, hs, body, method)
-          Just(res) -> res
-          Nothing -> impossible("http: exchange on a new connection")
+        Nothing ->
+          // an idle connection may have been closed by the server in the meantime:
+          // then an idempotent request is retried on a new connection
+          val on-idle = match c.take-idle(origin)
+            Just(s) -> c.exchange(origin, s, method.is-idempotent, start-line, hs, body, method)
+            Nothing -> Nothing
+          match on-idle
+            Just(res) -> res
+            Nothing ->
+              // a new connection, using HTTP/2 if the server agrees
+              val dialed : ref<global,bool> = async-ioc { ref(False) }
+              with finally
+                val done = async-ioc { !dialed }
+                if dialer && !done then c.end-dial(origin, False)
+              val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, alpn = if c.http2 then ["h2", "http/1.1"] else [])
+                      else plain-stream(tcp-connect(u.host, conn-port))
+              val is-h2 = if u.scheme == "https" then s.alpn-protocol == Just("h2") else c.h2c
+              if is-h2 then
+                val h = h2-connect(s)
+                async-ioc { c.set-h2(read-h2(c.h2conns) ++ [(origin, h)]) }
+                if dialer then
+                  async-ioc { dialed := True }
+                  c.end-dial(origin, False)
+                match on-h2(h)
+                  Just(res) -> res
+                  Nothing -> throw("http: the server refused the request")
+              else
+                if dialer then
+                  async-ioc { dialed := True }
+                  c.end-dial(origin, u.scheme == "https")
+                match c.exchange(origin, s, False, start-line, hs, body, method)
+                  Just(res) -> res
+                  Nothing -> impossible("http: exchange on a new connection")
 
 fun read-response( r : reader, method : string ) : <async,exn> (http-response, reader, bool)
   match r.read-until(crlfcrlf, 64 * 1024)
@@ -413,10 +453,36 @@ abstract struct http-client
   max-idle : int
   idle-timeout-ms : int
   tls : tls-opts
+  http2 : bool                          // offer HTTP/2 for `https` (with ALPN)
+  h2c : bool                            // use HTTP/2 for `http` (with prior knowledge)
+  h2conns : ref<global,list<(string, h2conn)>>   // HTTP/2 connections by origin
+  dialing : ref<global,list<(string, list<channel<()>>)>>   // origins being connected to, with waiting requests
+  h1-only : ref<global,list<string>>                         // origins whose server did not choose HTTP/2
 
 // (a signature is needed here: inferring the effect of reading the ref fails)
 fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-conn>
   !r
+
+fun read-h2( r : ref<global,list<(string, h2conn)>> ) : <read<global>,div> list<(string, h2conn)>
+  !r
+
+fun set-h2( c : http-client, xs : list<(string, h2conn)> ) : <write<global>,div> ()
+  val r = c.h2conns
+  r := xs
+
+fun read-dialing( r : ref<global,list<(string, list<channel<()>>)>> ) : <read<global>,div> list<(string, list<channel<()>>)>
+  !r
+
+fun set-dialing( c : http-client, xs : list<(string, list<channel<()>>)> ) : <write<global>,div> ()
+  val r = c.dialing
+  r := xs
+
+fun read-h1-only( r : ref<global,list<string>> ) : <read<global>,div> list<string>
+  !r
+
+fun set-h1-only( c : http-client, xs : list<string> ) : <write<global>,div> ()
+  val r = c.h1-only
+  r := xs
 
 // Create a client that keeps up to `max-idle-per-host` idle connections per
 // host open. Close it with `close` (or use `with client = http-client()`).
@@ -428,14 +494,21 @@ fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-
 // next time the client is used.
 //
 // For `https`, `tls-ca`, `tls-cert` and `tls-key` are used as in `http-request`.
+//
+// With `http2` (the default), `https` connections offer HTTP/2 (with ALPN);
+// when a server accepts, all requests to it share one connection. With
+// `h2c`, plain `http` requests use HTTP/2 directly ("prior knowledge"), which
+// only works with servers that support it.
 pub fun http-client( max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds,
-                     tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : async http-client
-  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds, Tls-opts(tls-ca, tls-cert, tls-key)) }
+                     tls-ca : string = "", tls-cert : string = "", tls-key : string = "",
+                     http2 : bool = True, h2c : bool = False ) : async http-client
+  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds, Tls-opts(tls-ca, tls-cert, tls-key), http2, h2c, ref([]), ref([]), ref([])) }
 
 // Create a client, run `action` with it, and close it afterwards.
 pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds,
-                            tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn|e> a
-  val c = http-client(max-idle-per-host, idle-timeout, tls-ca, tls-cert, tls-key)
+                            tls-ca : string = "", tls-cert : string = "", tls-key : string = "",
+                            http2 : bool = True, h2c : bool = False ) : <async,exn|e> a
+  val c = http-client(max-idle-per-host, idle-timeout, tls-ca, tls-cert, tls-key, http2, h2c)
   with finally { c.close }
   action(c)
 
@@ -447,6 +520,11 @@ pub fun http-client/close( c : http-client ) : async ()
     r := []
     xs
   conns.foreach(fn(ic) ic.stream.close)
+  val h2s = async-ioc
+    val xs = read-h2(c.h2conns)
+    c.set-h2([])
+    xs
+  h2s.foreach(fn((_, h)) h.h2-close)
 
 fun now-ms() : async int
   async-ioc { ticks().milli-seconds }
@@ -459,6 +537,50 @@ fun prune( c : http-client, now : int ) : async ()
     r := xs.filter(fn(ic) ic.expires > now)
     xs.filter(fn(ic) ic.expires <= now)
   expired.foreach(fn(ic) ic.stream.close)
+  // HTTP/2 connections that failed, or that were idle for too long
+  val h2s = async-ioc { read-h2(c.h2conns) }
+  h2s.foreach fn((_, h))
+    val unusable = !h.h2-is-open || (h.h2-active == 0 && h.h2-last-used + c.idle-timeout-ms <= now)
+    if unusable then
+      async-ioc { c.set-h2(read-h2(c.h2conns).filter(fn((_, x)) !x.h2-same(h))) }
+      h.h2-close
+
+// Wait while another request connects to the same origin (it may get an
+// HTTP/2 connection that can be shared). Returns `True` if this request
+// should connect itself, after which it must call `end-dial`.
+fun begin-dial( c : http-client, key : string, round : int ) : <async,ndet> bool
+  val known-h1 = async-ioc { read-h1-only(c.h1-only).any(fn(o) o == key) }
+  if known-h1 then return False
+  val ch = channel()
+  val wait = async-ioc
+    val xs = read-dialing(c.dialing)
+    match xs.lookup(fn(o) o == key)
+      Just(_) ->
+        c.set-dialing(xs.map(fn((o, ws)) if o == key then (o, Cons(ch, ws)) else (o, ws)))
+        True
+      Nothing ->
+        c.set-dialing(Cons((key, []), xs))
+        False
+  if !wait then True
+  else
+    ch.receive
+    match c.find-h2(key)
+      Just(_) -> False
+      Nothing -> c.begin-dial(key, pretend-decreasing(round + 1))
+
+// The connection attempt for `key` is done; `h1` records that the server chose HTTP/1.1.
+fun end-dial( c : http-client, key : string, h1 : bool ) : async ()
+  async-ioc
+    val xs = read-dialing(c.dialing)
+    xs.foreach(fn((o, ws)) if o == key then ws.foreach(fn(w) emit-io(w, ())))
+    c.set-dialing(xs.filter(fn((o, _)) o != key))
+    if h1 then c.set-h1-only(Cons(key, read-h1-only(c.h1-only).filter(fn(o) o != key)))
+
+// An open HTTP/2 connection to an origin.
+fun find-h2( c : http-client, key : string ) : async maybe<h2conn>
+  c.prune(now-ms())
+  val h2s = async-ioc { read-h2(c.h2conns) }
+  h2s.filter(fn((k, _)) k == key).map(snd).head
 
 fun take-idle( c : http-client, key : string ) : async maybe<net-stream>
   c.prune(now-ms())
@@ -526,29 +648,29 @@ fun exchange( c : http-client, key : string, s : net-stream, can-retry : bool,
     Error(exn) -> throw-exn(exn)
 
 // Send an HTTP request through the client (see `http-request`).
-pub fun client/http-request( c : http-client, method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10 ) : <async,exn,net> http-response
+pub fun client/http-request( c : http-client, method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10 ) : <async,exn,net,ndet> http-response
   request-url(Just(c), method, url, headers, body, max-redirects, c.tls)
 
 // `GET` a URL through the client.
-pub fun client/http-get( c : http-client, url : string, headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
+pub fun client/http-get( c : http-client, url : string, headers : headers = [], max-redirects : int = 10 ) : <async,exn,net,ndet> http-response
   request-url(Just(c), "GET", url, headers, bytes/empty, max-redirects, c.tls)
 
 // `POST` a body to a URL through the client.
-pub fun client/http-post( c : http-client, url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
+pub fun client/http-post( c : http-client, url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10 ) : <async,exn,net,ndet> http-response
   request-url(Just(c), "POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, c.tls)
 
 // `GET` a URL.
 pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10,
-                  tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net> http-response
+                  tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net,ndet> http-response
   http-request("GET", url, headers, max-redirects = max-redirects, tls-ca = tls-ca, tls-cert = tls-cert, tls-key = tls-key)
 
 // `POST` a body to a URL.
 pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10,
-                   tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net> http-response
+                   tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net,ndet> http-response
   http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca, tls-cert, tls-key)
 
 // `GET` a URL and return the body as text; raises an exception unless the status is 2xx.
-pub fun http-get-text( url : string ) : <async,exn,net> string
+pub fun http-get-text( url : string ) : <async,exn,net,ndet> string
   val res = http-get(url)
   if res.status < 200 || res.status >= 300 then throw("http: GET " ++ url ++ " returned " ++ res.status.show)
   res.body-text
@@ -563,6 +685,10 @@ pub fun http-get-text( url : string ) : <async,exn,net> string
 // configuration, connections use TLS (`https`); connections that fail the
 // TLS handshake are dropped.
 //
+// HTTP/2 is used when TLS negotiates it (include `"h2"` in the `alpn` of the
+// TLS configuration, as in `alpn = ["h2", "http/1.1"]`), and for plain
+// connections from clients that start with HTTP/2 directly (prior knowledge).
+//
 // A connection is closed when no new request starts within `idle-timeout`
 // after a response (announced to clients with a `Keep-Alive` header), or when
 // receiving a request takes longer than `request-timeout` (answered with
@@ -574,8 +700,24 @@ pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,nd
       Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), on-request, True, idle-timeout, request-timeout)
       Just(config) ->
         val s = conn.tls-accept(config)
-        serve-connection(Reader(s, bytes/empty), on-request, True, idle-timeout, request-timeout)
-        s.close-notify
+        if s.alpn-protocol == Just("h2") then
+          val (peer-ip, peer-port) = s.peer-address
+          val client-cert = s.peer-certificate.default("")
+          h2-serve(s, bytes/empty, h2-adapter(on-request, peer-ip ++ ":" ++ peer-port.show, client-cert), idle-timeout)
+        else
+          serve-connection(Reader(s, bytes/empty), on-request, True, idle-timeout, request-timeout)
+          s.close-notify
+
+// Adapt a request handler to HTTP/2 header lists.
+fun h2-adapter( on-request : http-request -> <async,exn,ndet|e> http-response, peer : string, client-cert : string )
+              : ((h2-headers, bytes) -> <async,exn,ndet|e> (int, list<(string, string)>, bytes))
+  fn(hs, req-body)
+    fun pseudo( name : string ) : string
+      hs.lookup(fn(n) n == name).default("")
+    val plain = hs.filter(fn((n, _)) !n.starts-with(":").is-just)
+    val hs' = if plain.header("host").is-just then plain else Cons(("host", pseudo(":authority")), plain)
+    val res = on-request(Http-request(pseudo(":method"), pseudo(":path"), hs', req-body, peer, client-cert, "HTTP/2"))
+    (res.status, res.headers, res.body)
 
 // A request read by the server.
 type incoming
@@ -610,6 +752,10 @@ fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e
       Just(In-closed) -> ()
       Just(In-bad) ->
         write-message(r.sock, "HTTP/1.1 400 Bad Request", [("Connection", "close")], "bad request".bytes)
+      Just(In-request("PRI", "*", "HTTP/2.0", _, _, r2)) | first ->
+        // the HTTP/2 connection preface: switch to HTTP/2 (prior knowledge)
+        val (peer-ip, peer-port) = r.sock.peer-address
+        h2-serve(r.sock, "PRI * HTTP/2.0\r\n\r\n".bytes ++ r2.buf, h2-adapter(on-request, peer-ip ++ ":" ++ peer-port.show, ""), idle-timeout)
       Just(In-request(method, target, version, hs, req-body, r2)) ->
         val (peer-ip, peer-port) = r.sock.peer-address
         val client-cert = r.sock.peer-certificate.default("")

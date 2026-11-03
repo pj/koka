@@ -243,6 +243,7 @@ ignored.
 | 20 | `std/crypto/hash` | SHA-256/512, SHA-1 (for legacy use only), BLAKE2b/BLAKE3, HMAC; constant-time compare | C: vendor a small audited implementation, or use mbedtls. JS: `node:crypto` / WebCrypto. |
 | 21 | `std/compress` | deflate, zlib, gzip (stream and one-shot); zip read/write later | Community `zlib`. |
 | 22 | `std/net/url` | RFC 3986 parse and build, query-string encode and decode, resolve relative URLs | Pure Koka. |
+| 22b | `std/net/hpack` | ✅ HPACK header compression (RFC 7541): decoder with the dynamic table and Huffman strings, stateless encoder; tables generated from the RFC, tested with all examples of its appendix C |
 | 23 | `std/net/tcp`, `std/net/udp`, `std/net/dns` | Async sockets on the libuv event loop | Community `uv` (tcp, pipe, stream). **Coordinate with the upstream libuv `std/async` port.** |
 | 24 | `std/net/tls` | Client and server TLS over the socket stream | Community `mbedtls`. JS: `node:tls`. |
 | 25 | `std/net/http` | HTTP/1.1 client (first) and a minimal production-capable server; request/response types; headers; chunked transfer | Community `llhttp` parser. Go's `net/http` is the model of "server good enough for production". Do **not** ship a toy dev-only server (§4). |
@@ -346,7 +347,7 @@ backends and diffs the output against its `.out` file.
 | 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable |
 | 23b | `std/async/os/udp` | ✅ UDP on libuv (C) and `dgram` (JS): `udp-bind`, `send-to` (IP or host name), `receive-from` with the sender address, `set-broadcast`, `local-address`; cancellable · ❌ multicast, connected UDP sockets |
 | 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle, `SSL_CERT_FILE`, or an explicit `ca`); TLS server: `tls-server-config` (PEM certificate chain and key) and `tls-accept` on accepted connections; client certificates (`cert`/`key` on the client, `client-ca` and `client-cert-required` on the server, `peer-certificate`); ALPN (`alpn`, `alpn-protocol`); mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ SNI-based certificate selection, certificate revocation |
-| 25 | `std/async/os/http` | ✅ HTTP/1.1 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA and a client certificate (`tls-ca`, `tls-cert`, `tls-key`); `http-client` reuses keep-alive connections (per-host idle pool with an idle timeout that also respects the server's `Keep-Alive: timeout`, idempotent requests retried once on a stale connection); the server reports the client address (`peer`) and certificate (`client-cert`) and honours `Connection: close` from a handler, and closes connections that stay idle (`idle-timeout`, announced in `Keep-Alive`) or send a request too slowly (`request-timeout`, answered with 408) · ❌ HTTP/2 |
+| 25 | `std/async/os/http` | ✅ HTTP/1.1 and HTTP/2 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA and a client certificate (`tls-ca`, `tls-cert`, `tls-key`); `http-client` reuses keep-alive connections (per-host idle pool with an idle timeout that also respects the server's `Keep-Alive: timeout`, idempotent requests retried once on a stale connection); the server reports the client address (`peer`) and certificate (`client-cert`) and honours `Connection: close` from a handler, and closes connections that stay idle (`idle-timeout`, announced in `Keep-Alive`) or send a request too slowly (`request-timeout`, answered with 408); HTTP/2 (`std/async/os/http2`) with ALPN on `https` and with prior knowledge (`h2c`) on `http`: multiplexing, flow control, `version` on requests and responses; the client shares one connection per origin (also between concurrent first requests) and retries requests refused by a closing server; interoperates with curl/nghttp2, Node.js, Google, Cloudflare and GitHub · ❌ server push, the `Upgrade: h2c` mechanism, HTTP/3 |
 | 26–27 | streams, sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ❌ |
@@ -386,6 +387,11 @@ backends and diffs the output against its `.out` file.
   already incremented `i`. Found through the HPACK encoder. Fixed in
   `Backend/JavaScript/FromCore.hs` (`genOverride` copies such arguments
   first); test: `test/jsgen/tailcall-args.kk`.
+* Closing a libuv socket twice was a use-after-free on the C backend (its
+  memory is released after the first close completes), and
+  `std/async/os/process` did that for stdin (`close-stdin`, then `close`).
+  It crashed only in optimized builds, depending on memory reuse. Sockets
+  now carry a `closed` flag, so `close` is idempotent.
 * The libuv bindings did not ignore `SIGPIPE`, so writing to a closed socket
   or to a child that exited killed the whole program on the C backend (Node
   ignores it). The networking and process bindings now ignore it.

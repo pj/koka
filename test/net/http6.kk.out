@@ -1,0 +1,17 @@
+h2c: HTTP/2 200 node 2.0 GET /hello ua=koka-http
+tls: HTTP/2 200 node 2.0 GET /hello ua=koka-http
+download: HTTP/2 200 200000 bytes
+upload: HTTP/2 200 300000 bytes, received 300000
+concurrent: [200,200,200,200,200,200,200,200,200,200]
+concurrent uploads: 100000,200000,300000
+node server exit: 0
+h2c 200 HTTP/2 GET /hello
+h2c 200 big 200000
+h2c 200 echo 300000
+h2c parallel 20
+h2c parallel big 200000,200000,200000
+tls 200 HTTP/2 GET /hello
+tls 200 big 200000
+tls 200 echo 300000
+tls parallel 20
+tls parallel big 200000,200000,200000
