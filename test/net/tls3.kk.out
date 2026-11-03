@@ -1,0 +1,14 @@
+required, with cert: client: CN=Koka Test Client, protocol: none | server: CN=localhost
+required, without cert: rejected
+required, untrusted cert: rejected
+optional, with cert: client: CN=Koka Test Client, protocol: none | server: CN=localhost
+optional, without cert: client: none, protocol: none | server: CN=localhost
+optional, untrusted cert: rejected
+alpn h2: client: none, protocol: h2 | server: CN=localhost
+alpn http/1.1: client: none, protocol: http/1.1 | server: CN=localhost
+alpn none: client: none, protocol: none | server: CN=localhost
+invalid client key: failed
+True
+https client: CN=Koka Test Client
+https client: none
+https client: CN=Koka Test Client

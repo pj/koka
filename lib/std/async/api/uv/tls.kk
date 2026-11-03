@@ -22,7 +22,7 @@ extern import
   c  file "tls.c"
   js file "tls.js"
 
-pub extern tls-new( host : string, verify : bool, ca : string ) : ioc any
+pub extern tls-new( host : string, verify : bool, ca : string, cert : string, key : string, alpn : string ) : ioc any
   c  "kk_tls_new"
   js "kk_tls_new"
 
@@ -55,7 +55,7 @@ pub extern tls-close-notify( t : any ) : ioc ()
   js "kk_tls_close_notify"
 
 // A server configuration (C: shared mbedtls configuration; Node.js: a secure context).
-pub extern tls-server-config-new( cert : string, key : string ) : ioc any
+pub extern tls-server-config-new( cert : string, key : string, client-ca : string, client-cert-required : bool, alpn : string ) : ioc any
   c  "kk_tls_server_config_new"
   js "kk_tls_server_config_new"
 
@@ -66,3 +66,13 @@ pub extern tls-server-config-error( conf : any ) : ioc string
 pub extern tls-new-server( conf : any ) : ioc any
   c  "kk_tls_new_server"
   js "kk_tls_new_server"
+
+// The negotiated ALPN protocol ("" if none).
+pub extern tls-alpn( t : any ) : ioc string
+  c  "kk_tls_alpn"
+  js "kk_tls_alpn"
+
+// The subject of the verified peer certificate ("" if none).
+pub extern tls-peer-subject( t : any ) : ioc string
+  c  "kk_tls_peer_subject"
+  js "kk_tls_peer_subject"

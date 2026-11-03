@@ -74,6 +74,7 @@ pub struct http-request
   headers : headers = []
   body : bytes = bytes/empty
   peer : string = ""           // on the server: the address of the client as `ip:port`
+  client-cert : string = ""    // on the server: the subject of the client certificate (`https` with `client-ca`), if any
 
 // An HTTP response.
 pub struct http-response
@@ -289,18 +290,27 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 //
 // For `https`, the server certificate is checked against the system CA
 // certificates, or only against `tls-ca` (PEM certificates) if it is given.
-pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
-  request-url(Nothing, method, url, headers, body, max-redirects, tls-ca)
+// A client certificate (`tls-cert`, PEM) and its private key (`tls-key`) are
+// presented to servers that ask for one.
+pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10,
+                      tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net> http-response
+  request-url(Nothing, method, url, headers, body, max-redirects, Tls-opts(tls-ca, tls-cert, tls-key))
 
-fun request-url( client : maybe<http-client>, method : string, url : string, headers : headers, body : bytes, max-redirects : int, tls-ca : string ) : <async,exn,net> http-response
+// TLS settings of a client
+value struct tls-opts
+  ca : string
+  cert : string
+  key : string
+
+fun request-url( client : maybe<http-client>, method : string, url : string, headers : headers, body : bytes, max-redirects : int, tls : tls-opts ) : <async,exn,net> http-response
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
-  if max-redirects <= 0 then send-request(client, method, u, headers, body, tls-ca)
-  else follow-redirects(client, method, u, headers, body, max-redirects, tls-ca)
+  if max-redirects <= 0 then send-request(client, method, u, headers, body, tls)
+  else follow-redirects(client, method, u, headers, body, max-redirects, tls)
 
-fun follow-redirects( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls-ca : string ) : <async,exn,net> http-response
-  val res = send-request(client, method, u, headers, body, tls-ca)
+fun follow-redirects( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls : tls-opts ) : <async,exn,net> http-response
+  val res = send-request(client, method, u, headers, body, tls)
   val is-redirect = res.status == 301 || res.status == 302 || res.status == 303 || res.status == 307 || res.status == 308
   match res.header("Location")
     Just(location) | is-redirect && redirects-left > 0 ->
@@ -310,7 +320,7 @@ fun follow-redirects( client : maybe<http-client>, method : string, u : url, hea
         then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
         else (method, body, headers)
       val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
-      follow-redirects(client, method', next, hs2, body', pretend-decreasing(redirects-left - 1), tls-ca)
+      follow-redirects(client, method', next, hs2, body', pretend-decreasing(redirects-left - 1), tls)
     _ | is-redirect && res.header("Location").is-just ->
       throw("http: too many redirects (the last one was to " ++ res.header("Location").default("").show ++ ")")
     _ -> res
@@ -333,7 +343,7 @@ fun is-idempotent( method : string ) : bool
     _ -> False
 
 // Send one request (no redirects), on a pooled connection if there is a client.
-fun send-request( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, tls-ca : string ) : <async,exn,net> http-response
+fun send-request( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, tls : tls-opts ) : <async,exn,net> http-response
   if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
@@ -343,7 +353,7 @@ fun send-request( client : maybe<http-client>, method : string, u : url, headers
   val hs = if hs1.header("User-Agent").is-just then hs1 else hs1.set-header("User-Agent", "koka-http")
   val start-line = method ++ " " ++ target ++ " HTTP/1.1"
   fun connect() : <async,exn,net> net-stream
-    if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls-ca) else plain-stream(tcp-connect(u.host, conn-port))
+    if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key) else plain-stream(tcp-connect(u.host, conn-port))
   match client
     Nothing ->
       val s = connect()
@@ -352,7 +362,7 @@ fun send-request( client : maybe<http-client>, method : string, u : url, headers
       val (res, _, _) = read-response(Reader(s, bytes/empty), method)
       res
     Just(c) ->
-      val key = u.scheme ++ "://" ++ u.host.to-lower ++ ":" ++ conn-port.show ++ " " ++ tls-ca
+      val key = u.scheme ++ "://" ++ u.host.to-lower ++ ":" ++ conn-port.show
       // an idle connection may have been closed by the server in the meantime:
       // then an idempotent request is retried on a new connection
       val on-idle = match c.take-idle(key)
@@ -402,6 +412,7 @@ abstract struct http-client
   idle : ref<global,list<idle-conn>>
   max-idle : int
   idle-timeout-ms : int
+  tls : tls-opts
 
 // (a signature is needed here: inferring the effect of reading the ref fails)
 fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-conn>
@@ -415,12 +426,16 @@ fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-
 // then kept one second less than that). The default of 4 seconds stays below
 // the 5 second timeout of many servers. Expired connections are closed the
 // next time the client is used.
-pub fun http-client( max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds ) : async http-client
-  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds) }
+//
+// For `https`, `tls-ca`, `tls-cert` and `tls-key` are used as in `http-request`.
+pub fun http-client( max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds,
+                     tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : async http-client
+  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds, Tls-opts(tls-ca, tls-cert, tls-key)) }
 
 // Create a client, run `action` with it, and close it afterwards.
-pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds ) : <async,exn|e> a
-  val c = http-client(max-idle-per-host, idle-timeout)
+pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds,
+                            tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn|e> a
+  val c = http-client(max-idle-per-host, idle-timeout, tls-ca, tls-cert, tls-key)
   with finally { c.close }
   action(c)
 
@@ -511,24 +526,26 @@ fun exchange( c : http-client, key : string, s : net-stream, can-retry : bool,
     Error(exn) -> throw-exn(exn)
 
 // Send an HTTP request through the client (see `http-request`).
-pub fun client/http-request( c : http-client, method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
-  request-url(Just(c), method, url, headers, body, max-redirects, tls-ca)
+pub fun client/http-request( c : http-client, method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10 ) : <async,exn,net> http-response
+  request-url(Just(c), method, url, headers, body, max-redirects, c.tls)
 
 // `GET` a URL through the client.
-pub fun client/http-get( c : http-client, url : string, headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
-  request-url(Just(c), "GET", url, headers, bytes/empty, max-redirects, tls-ca)
+pub fun client/http-get( c : http-client, url : string, headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
+  request-url(Just(c), "GET", url, headers, bytes/empty, max-redirects, c.tls)
 
 // `POST` a body to a URL through the client.
-pub fun client/http-post( c : http-client, url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
-  request-url(Just(c), "POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca)
+pub fun client/http-post( c : http-client, url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10 ) : <async,exn,net> http-response
+  request-url(Just(c), "POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, c.tls)
 
 // `GET` a URL.
-pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
-  http-request("GET", url, headers, max-redirects = max-redirects, tls-ca = tls-ca)
+pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10,
+                  tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net> http-response
+  http-request("GET", url, headers, max-redirects = max-redirects, tls-ca = tls-ca, tls-cert = tls-cert, tls-key = tls-key)
 
 // `POST` a body to a URL.
-pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10, tls-ca : string = "" ) : <async,exn,net> http-response
-  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca)
+pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10,
+                   tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net> http-response
+  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca, tls-cert, tls-key)
 
 // `GET` a URL and return the body as text; raises an exception unless the status is 2xx.
 pub fun http-get-text( url : string ) : <async,exn,net> string
@@ -595,7 +612,8 @@ fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e
         write-message(r.sock, "HTTP/1.1 400 Bad Request", [("Connection", "close")], "bad request".bytes)
       Just(In-request(method, target, version, hs, req-body, r2)) ->
         val (peer-ip, peer-port) = r.sock.peer-address
-        val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show)
+        val client-cert = r.sock.peer-certificate.default("")
+        val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show, client-cert)
         val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { on-request(req) }) }
         val keep-alive = match hs.header("Connection").map(to-lower)
           _ | res.header("Connection").map(to-lower) == Just("close") -> False

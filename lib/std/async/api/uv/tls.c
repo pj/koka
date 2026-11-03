@@ -22,10 +22,15 @@
 
 // A server configuration (certificate chain and private key), shared by the
 // engines of all connections accepted with it.
+#define KK_TLS_MAX_ALPN 8
+
 typedef struct kk_tls_conf_s {
   mbedtls_ssl_config       conf;
   mbedtls_x509_crt         cert;
   mbedtls_pk_context       key;
+  mbedtls_x509_crt         client_ca;   // to verify client certificates
+  char*        alpn_buf;                // ALPN protocol names (NUL separated)
+  const char*  alpn[KK_TLS_MAX_ALPN+1];
   mbedtls_entropy_context  entropy;
   mbedtls_ctr_drbg_context drbg;
   char     error[256];   // set if the configuration is invalid
@@ -35,6 +40,10 @@ typedef struct kk_tls_s {
   mbedtls_ssl_context      ssl;
   mbedtls_ssl_config       conf;
   mbedtls_x509_crt         ca;
+  mbedtls_x509_crt         own_cert;    // client certificate (clients only)
+  mbedtls_pk_context       own_key;
+  char*        alpn_buf;
+  const char*  alpn[KK_TLS_MAX_ALPN+1];
   mbedtls_entropy_context  entropy;
   mbedtls_ctr_drbg_context drbg;
   uint8_t* in;  size_t in_len;  size_t in_pos;  size_t in_cap;   // received ciphertext
@@ -104,6 +113,27 @@ static int kk_tls_load_ca( kk_tls_t* t ) {
   return 0;
 }
 
+// Configure the ALPN protocols from a comma separated list (if not empty).
+static int kk_tls_conf_alpn( mbedtls_ssl_config* conf, kk_string_t alpn, char** buf, const char** list, kk_context_t* ctx ) {
+  int ret = 0;
+  kk_with_string_as_qutf8_borrow(alpn, calpn, ctx) {
+    if (calpn[0] != 0) {
+      *buf = strdup(calpn);
+      size_t n = 0;
+      char* p = *buf;
+      while (p != NULL && n < KK_TLS_MAX_ALPN) {
+        char* comma = strchr(p, ',');
+        if (comma != NULL) *comma = 0;
+        if (*p != 0) list[n++] = p;
+        p = (comma == NULL ? NULL : comma + 1);
+      }
+      list[n] = NULL;
+      ret = mbedtls_ssl_conf_alpn_protocols(conf, list);
+    }
+  }
+  return ret;
+}
+
 static void kk_tls_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
   kk_unused(b);
   kk_tls_t* t = (kk_tls_t*)p;
@@ -112,8 +142,11 @@ static void kk_tls_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
   if (t->has_sconf) kk_box_drop(t->sconf, ctx);   // after the ssl context that refers to it
   mbedtls_ssl_config_free(&t->conf);
   mbedtls_x509_crt_free(&t->ca);
+  mbedtls_x509_crt_free(&t->own_cert);
+  mbedtls_pk_free(&t->own_key);
   mbedtls_ctr_drbg_free(&t->drbg);
   mbedtls_entropy_free(&t->entropy);
+  free(t->alpn_buf);
   free(t->in);
   free(t->out);
   free(t);
@@ -128,6 +161,8 @@ static kk_tls_t* kk_tls_alloc( kk_box_t* res, kk_context_t* ctx ) {
   mbedtls_ssl_init(&t->ssl);
   mbedtls_ssl_config_init(&t->conf);
   mbedtls_x509_crt_init(&t->ca);
+  mbedtls_x509_crt_init(&t->own_cert);
+  mbedtls_pk_init(&t->own_key);
   mbedtls_ctr_drbg_init(&t->drbg);
   mbedtls_entropy_init(&t->entropy);
   *res = kk_cptr_raw_box(&kk_tls_free_fun, t, ctx);   // freed when the Koka value is dropped
@@ -136,8 +171,10 @@ static kk_tls_t* kk_tls_alloc( kk_box_t* res, kk_context_t* ctx ) {
 
 // Create a TLS client for `host`. With `verify`, the server certificate is
 // checked against `ca` (PEM certificates) or, if `ca` is empty, the system CA
-// certificates. Check `kk_tls_error` for failures.
-kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_context_t* ctx ) {
+// certificates. If `cert` is not empty, it is presented (with private key
+// `key`) as the client certificate. `alpn` is a comma separated list of
+// protocols to offer. Check `kk_tls_error` for failures.
+kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_string_t cert, kk_string_t key, kk_string_t alpn, kk_context_t* ctx ) {
   kk_box_t res;
   kk_tls_t* t = kk_tls_alloc(&res, ctx);
   int ret;
@@ -167,6 +204,20 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_context_t
   else {
     mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_NONE);
   }
+  if (kk_string_len_borrow(cert, ctx) > 0) {
+    kk_with_string_as_qutf8_borrow(cert, ccert, ctx) {
+      ret = mbedtls_x509_crt_parse(&t->own_cert, (const unsigned char*)ccert, strlen(ccert) + 1);
+    }
+    if (ret != 0) { kk_tls_set_error(t, "invalid client certificate", ret); goto done; }
+    kk_with_string_as_qutf8_borrow(key, ckey, ctx) {
+      ret = mbedtls_pk_parse_key(&t->own_key, (const unsigned char*)ckey, strlen(ckey) + 1, NULL, 0, mbedtls_ctr_drbg_random, &t->drbg);
+    }
+    if (ret != 0) { kk_tls_set_error(t, "invalid client private key", ret); goto done; }
+    ret = mbedtls_ssl_conf_own_cert(&t->conf, &t->own_cert, &t->own_key);
+    if (ret != 0) { kk_tls_set_error(t, "the client private key does not fit the certificate", ret); goto done; }
+  }
+  ret = kk_tls_conf_alpn(&t->conf, alpn, &t->alpn_buf, t->alpn, ctx);
+  if (ret != 0) { kk_tls_set_error(t, "invalid ALPN protocols", ret); goto done; }
   ret = mbedtls_ssl_setup(&t->ssl, &t->conf);
   if (ret != 0) { kk_tls_set_error(t, "unable to set up TLS", ret); goto done; }
   kk_with_string_as_qutf8_borrow(host, chost, ctx) {
@@ -177,6 +228,9 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_context_t
 done:
   kk_string_drop(host, ctx);
   kk_string_drop(ca, ctx);
+  kk_string_drop(cert, ctx);
+  kk_string_drop(key, ctx);
+  kk_string_drop(alpn, ctx);
   return res;
 }
 
@@ -190,18 +244,24 @@ static void kk_tls_conf_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
   if (c == NULL) return;
   mbedtls_ssl_config_free(&c->conf);
   mbedtls_x509_crt_free(&c->cert);
+  mbedtls_x509_crt_free(&c->client_ca);
   mbedtls_pk_free(&c->key);
+  free(c->alpn_buf);
   mbedtls_ctr_drbg_free(&c->drbg);
   mbedtls_entropy_free(&c->entropy);
   free(c);
 }
 
 // Create a server configuration from a PEM certificate chain (the server
-// certificate first) and a PEM private key. Check `kk_tls_server_config_error`.
-kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_context_t* ctx ) {
+// certificate first) and a PEM private key. If `client_ca` is not empty,
+// clients are asked for a certificate signed by it; `client_cert_required`
+// rejects clients without one. `alpn` is a comma separated list of protocols
+// in order of preference. Check `kk_tls_server_config_error`.
+kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_t client_ca, bool client_cert_required, kk_string_t alpn, kk_context_t* ctx ) {
   kk_tls_conf_t* c = (kk_tls_conf_t*)calloc(1, sizeof(kk_tls_conf_t));
   mbedtls_ssl_config_init(&c->conf);
   mbedtls_x509_crt_init(&c->cert);
+  mbedtls_x509_crt_init(&c->client_ca);
   mbedtls_pk_init(&c->key);
   mbedtls_ctr_drbg_init(&c->drbg);
   mbedtls_entropy_init(&c->entropy);
@@ -224,9 +284,21 @@ kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_context
   mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
   ret = mbedtls_ssl_conf_own_cert(&c->conf, &c->cert, &c->key);
   if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "the private key does not fit the certificate", ret); goto done; }
+  if (kk_string_len_borrow(client_ca, ctx) > 0) {
+    kk_with_string_as_qutf8_borrow(client_ca, cca, ctx) {
+      ret = mbedtls_x509_crt_parse(&c->client_ca, (const unsigned char*)cca, strlen(cca) + 1);
+    }
+    if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid client CA certificate", ret); goto done; }
+    mbedtls_ssl_conf_ca_chain(&c->conf, &c->client_ca, NULL);
+    mbedtls_ssl_conf_authmode(&c->conf, client_cert_required ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_OPTIONAL);
+  }
+  ret = kk_tls_conf_alpn(&c->conf, alpn, &c->alpn_buf, c->alpn, ctx);
+  if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid ALPN protocols", ret); goto done; }
 done:
   kk_string_drop(cert, ctx);
   kk_string_drop(key, ctx);
+  kk_string_drop(client_ca, ctx);
+  kk_string_drop(alpn, ctx);
   return res;
 }
 
@@ -263,7 +335,16 @@ kk_integer_t kk_tls_handshake( kk_box_t bt, kk_context_t* ctx ) {
   kk_tls_t* t = kk_tls_unbox(bt, ctx);
   int status;
   const int ret = mbedtls_ssl_handshake(&t->ssl);
-  if (ret == 0) status = 0;
+  if (ret == 0 && t->has_sconf && mbedtls_ssl_get_peer_cert(&t->ssl) != NULL && mbedtls_ssl_get_verify_result(&t->ssl) != 0) {
+    // a server with optional client certificates: a certificate that is presented must be valid
+    char vinfo[160];
+    mbedtls_x509_crt_verify_info(vinfo, sizeof(vinfo), "", mbedtls_ssl_get_verify_result(&t->ssl));
+    char* nl = strchr(vinfo, '\n');
+    if (nl != NULL) *nl = 0;
+    snprintf(t->error, sizeof(t->error), "client certificate verification failed: %s", vinfo);
+    status = -1;
+  }
+  else if (ret == 0) status = 0;
   else if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) status = 1;
   else {
     if (ret == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
@@ -358,4 +439,27 @@ kk_unit_t kk_tls_close_notify( kk_box_t bt, kk_context_t* ctx ) {
   mbedtls_ssl_close_notify(&t->ssl);
   kk_box_drop(bt, ctx);
   return kk_Unit;
+}
+
+// The negotiated ALPN protocol ("" if none).
+kk_string_t kk_tls_alpn( kk_box_t bt, kk_context_t* ctx ) {
+  kk_tls_t* t = kk_tls_unbox(bt, ctx);
+  const char* proto = mbedtls_ssl_get_alpn_protocol(&t->ssl);
+  kk_string_t s = kk_string_alloc_from_utf8(proto == NULL ? "" : proto, ctx);
+  kk_box_drop(bt, ctx);
+  return s;
+}
+
+// The subject of the verified peer certificate, for example "CN=example.com" ("" if none).
+kk_string_t kk_tls_peer_subject( kk_box_t bt, kk_context_t* ctx ) {
+  kk_tls_t* t = kk_tls_unbox(bt, ctx);
+  char buf[512];
+  buf[0] = 0;
+  const mbedtls_x509_crt* crt = mbedtls_ssl_get_peer_cert(&t->ssl);
+  if (crt != NULL && mbedtls_ssl_get_verify_result(&t->ssl) == 0) {
+    if (mbedtls_x509_dn_gets(buf, sizeof(buf), &crt->subject) < 0) buf[0] = 0;
+  }
+  kk_string_t s = kk_string_alloc_from_utf8(buf, ctx);
+  kk_box_drop(bt, ctx);
+  return s;
 }

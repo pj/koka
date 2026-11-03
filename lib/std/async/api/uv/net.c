@@ -509,6 +509,16 @@ kk_unit_t kk_net_set_nodelay( kk_box_t bsock, bool enable, kk_context_t* ctx ) {
   return kk_Unit;
 }
 
+kk_string_t kk_net_tls_alpn( kk_box_t sock, kk_context_t* ctx ) {
+  kk_box_drop(sock, ctx);
+  return kk_string_empty();
+}
+
+kk_string_t kk_net_tls_peer_subject( kk_box_t sock, kk_context_t* ctx ) {
+  kk_box_drop(sock, ctx);
+  return kk_string_empty();
+}
+
 // ---------------------------------------------------------------------------
 // UDP
 // ---------------------------------------------------------------------------
@@ -690,10 +700,14 @@ kk_std_core_exn__error kk_udp_set_broadcast( kk_box_t bu, bool enable, kk_contex
 }
 
 // TLS is implemented in Koka on top of the mbedtls engine for the C backend (see `tls.c`)
-kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, bool verify, kk_string_t ca, kk_function_t cb, kk_context_t* ctx ) {
+kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, bool verify, kk_string_t ca,
+                                                 kk_string_t cert, kk_string_t key, kk_string_t alpn, kk_function_t cb, kk_context_t* ctx ) {
   kk_unused(loop); kk_unused(port); kk_unused(verify);
   kk_string_drop(host, ctx);
   kk_string_drop(ca, ctx);
+  kk_string_drop(cert, ctx);
+  kk_string_drop(key, ctx);
+  kk_string_drop(alpn, ctx);
   kk_function_drop(cb, ctx);
   return kk_error_from_uv_errno(UV_ENOTSUP, ctx);
 }

@@ -62,7 +62,7 @@ pub extern net-set-nodelay( sock : any, enable : bool ) : ioc ()
   js "kk_net_set_nodelay"
 
 // Connect with TLS natively (Node.js only); returns a socket usable with the other primitives.
-pub extern net-tls-connect-setup( evloop : any, host : string, port : int32, verify : bool, ca : string, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
+pub extern net-tls-connect-setup( evloop : any, host : string, port : int32, verify : bool, ca : string, cert : string, key : string, alpn : string, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
   c  "kk_net_tls_connect_setup"
   js "kk_net_tls_connect_setup"
 
@@ -70,6 +70,16 @@ pub extern net-tls-connect-setup( evloop : any, host : string, port : int32, ver
 pub extern net-tls-accept-setup( evloop : any, sock : any, conf : any, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
   c  "kk_net_tls_accept_setup"
   js "kk_net_tls_accept_setup"
+
+// The negotiated ALPN protocol of a native TLS socket ("" if none).
+pub extern net-tls-alpn( sock : any ) : ioc string
+  c  "kk_net_tls_alpn"
+  js "kk_net_tls_alpn"
+
+// The subject of the verified peer certificate of a native TLS socket ("" if none).
+pub extern net-tls-peer-subject( sock : any ) : ioc string
+  c  "kk_net_tls_peer_subject"
+  js "kk_net_tls_peer_subject"
 
 // Is TLS provided natively by the host (Node.js)? Otherwise use the `uv/tls` engine.
 pub extern net-has-native-tls() : bool

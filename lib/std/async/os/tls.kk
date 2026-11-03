@@ -25,6 +25,10 @@
      s.close-notify
    ```
 
+   Servers can ask clients for a certificate (`client-ca` in
+   `tls-server-config`), and both sides can negotiate an application protocol
+   with ALPN (used for HTTP/2).
+
    On the C backend this uses mbedtls (with the system CA certificates, or the
    bundle in `SSL_CERT_FILE`); on Node.js it uses the built-in `tls` module.
 
@@ -61,14 +65,21 @@ pub fun is-secure( s : net-stream ) : bool
 // against the system CA certificates, or only against `ca` (PEM
 // certificates) if it is given. With `verify=False` the server certificate is
 // not checked at all (only use this for testing).
-pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca : string = "" ) : <async,exn,net> net-stream
+//
+// - `cert`, `key`: a client certificate (PEM, possibly followed by intermediate
+//   certificates) and its private key, for servers that ask for one.
+// - `alpn`: application protocols to offer (for example `["h2", "http/1.1"]`);
+//   see `alpn-protocol` for the one the server chose.
+pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca : string = "",
+                     cert : string = "", key : string = "", alpn : list<string> = [] ) : <async,exn,net> net-stream
   with try-exn-prepend("tls connect to " ++ host ++ ":" ++ port.show)
+  val alpns = alpn.join(",")
   if net-has-native-tls() then
-    val h = await("tls-connect", fn(evloop, resume) net-tls-connect-setup(evloop, host, port.int32, verify, ca, resume))
+    val h = await("tls-connect", fn(evloop, resume) net-tls-connect-setup(evloop, host, port.int32, verify, ca, cert, key, alpns, resume))
     Net-stream(@unsafe-tcp-socket(h), Nothing, True)
   else
     val sock = tcp-connect(host, port)
-    val t = async-ioc { tls-new(host, verify, ca) }
+    val t = async-ioc { tls-new(host, verify, ca, cert, key, alpns) }
     val err = async-ioc { tls-error(t) }
     if !err.is-empty then
       sock.close
@@ -80,8 +91,9 @@ pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca :
       Ok -> Net-stream(sock, Just(t), True)
 
 // Connect, run `action` with the stream, and close it afterwards.
-pub fun scoped/tls-connect( host : string, port : int, action : net-stream -> <async,exn,net|e> a, verify : bool = True, ca : string = "" ) : <async,exn,net|e> a
-  val s = tls-connect(host, port, verify, ca)
+pub fun scoped/tls-connect( host : string, port : int, action : net-stream -> <async,exn,net|e> a, verify : bool = True, ca : string = "",
+                            cert : string = "", key : string = "", alpn : list<string> = [] ) : <async,exn,net|e> a
+  val s = tls-connect(host, port, verify, ca, cert, key, alpn)
   with finally { s.close }
   action(s)
 
@@ -91,8 +103,16 @@ abstract struct tls-config( hnd : any )
 // Create a server configuration from a PEM certificate chain (the server
 // certificate first, followed by any intermediate certificates) and a PEM
 // private key. Raises an exception if they are invalid or do not match.
-pub fun tls-server-config( cert-chain : string, private-key : string ) : <async,exn> tls-config
-  val c = async-ioc { tls-server-config-new(cert-chain, private-key) }
+//
+// - `client-ca`: if given (PEM certificates), clients are asked for a
+//   certificate signed by it; see `peer-certificate`. A client without one is
+//   rejected if `client-cert-required` (and accepted otherwise), and a client
+//   with an invalid one is always rejected.
+// - `alpn`: application protocols the server supports, in order of
+//   preference (for example `["h2", "http/1.1"]`).
+pub fun tls-server-config( cert-chain : string, private-key : string, client-ca : string = "", client-cert-required : bool = True,
+                           alpn : list<string> = [] ) : <async,exn> tls-config
+  val c = async-ioc { tls-server-config-new(cert-chain, private-key, client-ca, client-cert-required, alpn.join(",")) }
   val err = async-ioc { tls-server-config-error(c) }
   if !err.is-empty then throw("tls server config: " ++ err)
   Tls-config(c)
@@ -128,6 +148,23 @@ fun handshake( sock : tcp-socket, t : any ) : <async,exn> ()
     async-ioc { tls-feed(t, data, data.is-empty) }
     handshake(sock, pretend-decreasing(t))
   else throw(async-ioc { tls-error(t) })
+
+// The application protocol negotiated with ALPN (for example `"h2"`), or
+// `Nothing` if none was (or the stream is not encrypted).
+pub fun alpn-protocol( s : net-stream ) : async maybe<string>
+  val p = match s.engine
+    Just(t) -> async-ioc { tls-alpn(t) }
+    Nothing -> if s.secure then async-ioc { net-tls-alpn(s.sock.@unsafe-hnd) } else ""
+  if p.is-empty then Nothing else Just(p)
+
+// The subject of the peer's verified certificate (for example
+// `"CN=example.com"`): on a client the server's certificate (if verified), and
+// on a server the client certificate (if one was presented).
+pub fun peer-certificate( s : net-stream ) : async maybe<string>
+  val subj = match s.engine
+    Just(t) -> async-ioc { tls-peer-subject(t) }
+    Nothing -> if s.secure then async-ioc { net-tls-peer-subject(s.sock.@unsafe-hnd) } else ""
+  if subj.is-empty then Nothing else Just(subj)
 
 // The remote `(ip, port)` of the stream.
 pub fun net-stream/peer-address( s : net-stream ) : async (string, int)
