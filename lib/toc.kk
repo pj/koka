@@ -51,6 +51,7 @@ pub import std/data/csv
 pub import std/data/uuid
 
 pub import std/net/url
+pub import std/net/hpack
 pub import std/crypto/hash
 pub import std/log
 pub import std/test
