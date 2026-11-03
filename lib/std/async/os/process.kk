@@ -85,7 +85,10 @@ pub fun spawn( cmd : string, args : list<string> = [], cwd : path = "".path, env
   val h = await("proc-spawn") fn(evloop, resume)
     proc-spawn-setup(evloop, cmd, args.vector, cwd.string, envs.vector, stdin.code, stdout.code, stderr.code, resume)
   fun take( i : int ) : async maybe<tcp-socket>
-    async-ioc { proc-take-stdio(h, i.int32) }.map(@unsafe-tcp-socket)
+    val pipe = async-ioc { proc-take-stdio(h, i.int32) }
+    match pipe
+      Just(x) -> Just(@unsafe-tcp-socket(x))
+      Nothing -> Nothing
   Process(h, take(0), take(1), take(2))
 
 // Start a process, run `action` with it, and close it afterwards. If the

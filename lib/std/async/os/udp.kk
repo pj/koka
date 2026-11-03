@@ -36,13 +36,14 @@ import async/api/net
   [host=libc|jsnode] async/api/uv/net
 
 // A UDP socket.
-abstract struct udp-socket( hnd : any )
+abstract struct udp-socket( hnd : any, closed : ref<global,bool> )
 
 // Create a UDP socket bound to `ip` (for example `"0.0.0.0"` for all IPv4
 // interfaces, or `"::"` for IPv6) and `port`; use port `0` to pick a free port.
 pub fun udp-bind( ip : string = "0.0.0.0", port : int = 0 ) : <async,exn,net> udp-socket
   with try-exn-prepend("udp bind to " ++ ip ++ ":" ++ port.show)
-  Udp-socket(await("udp-bind", fn(evloop, resume) udp-bind-setup(evloop, ip, port.int32, resume)))
+  val h = await("udp-bind", fn(evloop, resume) udp-bind-setup(evloop, ip, port.int32, resume))
+  async-ioc { Udp-socket(h, ref(False)) }
 
 // Create a UDP socket, run `action` with it, and close it afterwards.
 pub fun scoped/udp-bind( ip : string, port : int, action : udp-socket -> <async,exn,net|e> a ) : <async,exn,net|e> a
@@ -83,4 +84,13 @@ pub fun udp-socket/local-port( s : udp-socket ) : async int
 
 // Close the socket; a pending `receive-from` raises an exception.
 pub fun udp-socket/close( s : udp-socket ) : async ()
-  async-ioc { udp-close(s.hnd) }
+  val was = async-ioc
+    val r : ref<global,bool> = s.closed
+    val x = get-closed(r)
+    r := True
+    x
+  if !was then async-ioc { udp-close(s.hnd) }
+
+// (a signature is needed here: inferring the effect of reading the ref fails)
+fun get-closed( r : ref<global,bool> ) : <read<global>,div> bool
+  !r

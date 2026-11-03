@@ -43,14 +43,27 @@ import async/api/net
   [host=libc|jsnode] async/api/uv/net
 
 // A connected TCP socket.
-abstract struct tcp-socket( hnd : any )
+abstract struct tcp-socket( hnd : any, closed : ref<global,bool> )
 
 // A listening TCP server.
-abstract struct tcp-server( hnd : any )
+abstract struct tcp-server( hnd : any, closed : ref<global,bool> )
 
-// Internal: wrap a primitive socket handle (used by `std/async/os/tls`).
-pub fun @unsafe-tcp-socket( h : any ) : tcp-socket
-  Tcp-socket(h)
+// Internal: wrap a primitive socket handle (used by `std/async/os/tls` and `std/async/os/process`).
+pub fun @unsafe-tcp-socket( h : any ) : async tcp-socket
+  async-ioc { Tcp-socket(h, ref(False)) }
+
+// Mark a socket as closed; `True` if it already was. Closing a handle twice
+// is not safe (it may be freed after the first close), so `close` is
+// idempotent at this level.
+fun mark-closed( r : ref<global,bool> ) : async bool
+  async-ioc
+    val was = get-flag(r)
+    r := True
+    was
+
+// (a signature is needed here: inferring the effect of reading the ref fails)
+fun get-flag( r : ref<global,bool> ) : <read<global>,div> bool
+  !r
 
 // Internal: the primitive socket handle (used by `std/async/os/tls`).
 pub fun @unsafe-hnd( s : tcp-socket ) : any
@@ -79,7 +92,7 @@ fun connect-first( ips : list<string>, port : int, last-err : maybe<exception> )
     Cons(ip, rest) ->
       val res = setup/await-error1("net-connect", fn(evloop, resume) net-connect-setup(evloop, ip, port.int32, resume))
       match res
-        Ok(h) -> Tcp-socket(h)
+        Ok(h) -> @unsafe-tcp-socket(h)
         Error(exn) -> connect-first(rest, port, Just(exn))
 
 // Connect, run `action` with the socket, and close the socket afterwards.
@@ -117,9 +130,9 @@ pub fun write-text( s : tcp-socket, text : string ) : <async,exn> ()
 pub fun shutdown-write( s : tcp-socket ) : <async,exn> ()
   await("net-shutdown", fn(evloop, resume) net-shutdown-setup(evloop, s.hnd, resume))
 
-// Close the socket.
+// Close the socket (closing it again does nothing).
 pub fun tcp-socket/close( s : tcp-socket ) : async ()
-  async-ioc { net-close(s.hnd) }
+  if !mark-closed(s.closed) then async-ioc { net-close(s.hnd) }
 
 // Enable or disable Nagle's algorithm (`enable=True` sends small writes immediately).
 pub fun set-nodelay( s : tcp-socket, enable : bool = True ) : async ()
@@ -137,13 +150,14 @@ pub fun peer-address( s : tcp-socket ) : async (string, int)
 // interfaces, or `"::"` for IPv6) and `port`; use port `0` to pick a free port.
 pub fun tcp-listen( ip : string, port : int, backlog : int = 128 ) : <async,exn,net> tcp-server
   with try-exn-prepend("listen on " ++ ip ++ ":" ++ port.show)
-  Tcp-server(await("net-listen", fn(evloop, resume) net-listen-setup(evloop, ip, port.int32, backlog.int32, resume)))
+  val h = await("net-listen", fn(evloop, resume) net-listen-setup(evloop, ip, port.int32, backlog.int32, resume))
+  async-ioc { Tcp-server(h, ref(False)) }
 
 // Wait for and accept the next incoming connection.
 pub fun accept( srv : tcp-server ) : <async,exn> tcp-socket
   val queued = async-ioc { net-try-accept(srv.hnd) }
   match queued
-    Just(h) -> Tcp-socket(h)
+    Just(h) -> @unsafe-tcp-socket(h)
     Nothing ->
       await("net-accept", fn(evloop, resume) net-wait-connection-setup(evloop, srv.hnd, resume))
       accept(pretend-decreasing(srv))
@@ -164,7 +178,7 @@ pub fun local-port( srv : tcp-server ) : async int
 
 // Stop listening and close any connections that were not yet accepted.
 pub fun tcp-server/close( srv : tcp-server ) : async ()
-  async-ioc { net-close(srv.hnd) }
+  if !mark-closed(srv.closed) then async-ioc { net-close(srv.hnd) }
 
 // Serve connections forever: each accepted connection is handled by `on-conn`
 // in its own strand (and closed afterwards). Errors in a handler are reported
