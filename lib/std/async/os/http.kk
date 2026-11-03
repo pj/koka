@@ -40,6 +40,9 @@
    val b = client.http-get("http://127.0.0.1:8080/hello?name=again")   // same connection
    ```
 
+   Idle connections are closed after a while on both sides: see the
+   `idle-timeout` parameters of `http-client` and `http-serve`.
+
    Bodies are framed with `Content-Length`, `Transfer-Encoding: chunked`, or
    (for responses) by the server closing the connection. The server supports
    persistent (keep-alive) connections. The client follows redirects.
@@ -47,8 +50,11 @@
 module async/os/http
 
 import std/core/undiv
+import std/time/duration
+import std/time/timer
 import async/async
 import async/internal
+import async/interleave
 import async/os/net
 import async/os/tls
 import std/net/url
@@ -133,6 +139,7 @@ pub fun reason-phrase( status : int ) : string
     403 -> "Forbidden"
     404 -> "Not Found"
     405 -> "Method Not Allowed"
+    408 -> "Request Timeout"
     409 -> "Conflict"
     413 -> "Content Too Large"
     415 -> "Unsupported Media Type"
@@ -386,6 +393,7 @@ fun read-response( r : reader, method : string ) : <async,exn> (http-response, r
 value struct idle-conn
   origin : string       // scheme, host, port, and CA
   stream : net-stream
+  expires : int         // in milliseconds (`ticks`)
 
 // An HTTP client that keeps connections open (keep-alive) and reuses them for
 // later requests to the same scheme, host and port. It can be used by several
@@ -393,6 +401,7 @@ value struct idle-conn
 abstract struct http-client
   idle : ref<global,list<idle-conn>>
   max-idle : int
+  idle-timeout-ms : int
 
 // (a signature is needed here: inferring the effect of reading the ref fails)
 fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-conn>
@@ -400,12 +409,18 @@ fun read-idle( r : ref<global,list<idle-conn>> ) : <read<global>,div> list<idle-
 
 // Create a client that keeps up to `max-idle-per-host` idle connections per
 // host open. Close it with `close` (or use `with client = http-client()`).
-pub fun http-client( max-idle-per-host : int = 4 ) : async http-client
-  async-ioc { Http-client(ref([]), max-idle-per-host) }
+//
+// An idle connection is not reused after `idle-timeout`, or earlier if the
+// server announces a shorter timeout (`Keep-Alive: timeout=N`; a connection is
+// then kept one second less than that). The default of 4 seconds stays below
+// the 5 second timeout of many servers. Expired connections are closed the
+// next time the client is used.
+pub fun http-client( max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds ) : async http-client
+  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds) }
 
 // Create a client, run `action` with it, and close it afterwards.
-pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4 ) : <async,exn|e> a
-  val c = http-client(max-idle-per-host)
+pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds ) : <async,exn|e> a
+  val c = http-client(max-idle-per-host, idle-timeout)
   with finally { c.close }
   action(c)
 
@@ -418,7 +433,20 @@ pub fun http-client/close( c : http-client ) : async ()
     xs
   conns.foreach(fn(ic) ic.stream.close)
 
+fun now-ms() : async int
+  async-ioc { ticks().milli-seconds }
+
+// Remove the expired idle connections and close them.
+fun prune( c : http-client, now : int ) : async ()
+  val expired = async-ioc
+    val r : ref<global,list<idle-conn>> = c.idle
+    val xs = read-idle(r)
+    r := xs.filter(fn(ic) ic.expires > now)
+    xs.filter(fn(ic) ic.expires <= now)
+  expired.foreach(fn(ic) ic.stream.close)
+
 fun take-idle( c : http-client, key : string ) : async maybe<net-stream>
+  c.prune(now-ms())
   async-ioc
     val r : ref<global,list<idle-conn>> = c.idle
     val (found, rest) = remove-first(read-idle(r), key)
@@ -434,15 +462,28 @@ fun remove-first( xs : list<idle-conn>, key : string ) : (maybe<net-stream>, lis
         (found, Cons(ic, rest'))
     Nil -> (Nothing, Nil)
 
-fun put-idle( c : http-client, key : string, s : net-stream ) : async ()
+// Keep `s` for at most `lifetime` milliseconds.
+fun put-idle( c : http-client, key : string, s : net-stream, lifetime : int ) : async ()
+  val now = now-ms()
+  c.prune(now)
   val stored = async-ioc
     val r : ref<global,list<idle-conn>> = c.idle
     val xs = read-idle(r)
-    if xs.filter(fn(ic) ic.origin == key).length >= c.max-idle then False
+    if lifetime <= 0 || xs.filter(fn(ic) ic.origin == key).length >= c.max-idle then False
     else
-      r := Cons(Idle-conn(key, s), xs)
+      r := Cons(Idle-conn(key, s, now + lifetime), xs)
       True
   if !stored then s.close
+
+// How long a connection may stay idle after a response with headers `hs`, in milliseconds.
+fun idle-lifetime( c : http-client, hs : headers ) : int
+  val announced = hs.header("Keep-Alive").default("").split(",").map(trim).foldl(Nothing) fn(acc, param)
+    match param.to-lower.starts-with("timeout=")
+      Just(rest) -> parse-int(rest.string.trim)
+      Nothing -> acc
+  match announced
+    Just(secs) -> min(max(0, secs - 1) * 1000, c.idle-timeout-ms)
+    Nothing -> c.idle-timeout-ms
 
 // Send a request on `s` and read the response; afterwards the connection is
 // put back in the pool if it can be reused, and closed otherwise (also on
@@ -450,10 +491,10 @@ fun put-idle( c : http-client, key : string, s : net-stream ) : async ()
 // connection turns out to be closed before any response arrives.
 fun exchange( c : http-client, key : string, s : net-stream, can-retry : bool,
               start-line : string, hs : headers, body : bytes, method : string ) : <async,exn> maybe<http-response>
-  val keep : ref<global,bool> = async-ioc { ref(False) }
+  val keep : ref<global,int> = async-ioc { ref(0) }   // the idle lifetime if the connection can be reused
   with finally
-    val reuse = async-ioc { !keep }
-    if reuse then c.put-idle(key, s) else s.close
+    val lifetime = async-ioc { !keep }
+    if lifetime > 0 then c.put-idle(key, s, lifetime) else s.close
   val started = catch(fn(exn) Error(exn), {
     write-message(s, start-line, hs, body)
     Ok(Reader(s, bytes/empty).fill)
@@ -461,7 +502,9 @@ fun exchange( c : http-client, key : string, s : net-stream, can-retry : bool,
   match started
     Ok((True, r)) ->
       val (res, rest, reusable) = read-response(r, method)
-      if reusable && rest.buf.is-empty then async-ioc { keep := True }
+      if reusable && rest.buf.is-empty then
+        val lifetime = c.idle-lifetime(res.headers)
+        async-ioc { keep := lifetime }
       Just(res)
     _ | can-retry -> Nothing
     Ok(_) -> throw("http: connection closed before the response")
@@ -502,37 +545,68 @@ pub fun http-get-text( url : string ) : <async,exn,net> string
 // An exception in `on-request` results in a `500` response. With a `tls`
 // configuration, connections use TLS (`https`); connections that fail the
 // TLS handshake are dropped.
-pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config> = Nothing ) : <async,exn,ndet|e> ()
+//
+// A connection is closed when no new request starts within `idle-timeout`
+// after a response (announced to clients with a `Keep-Alive` header), or when
+// receiving a request takes longer than `request-timeout` (answered with
+// `408 Request Timeout`).
+pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config> = Nothing,
+                    idle-timeout : duration = 5.seconds, request-timeout : duration = 60.seconds ) : <async,exn,ndet|e> ()
   srv.serve fn(conn)
     match tls
-      Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), on-request)
+      Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), on-request, True, idle-timeout, request-timeout)
       Just(config) ->
         val s = conn.tls-accept(config)
-        serve-connection(Reader(s, bytes/empty), on-request)
+        serve-connection(Reader(s, bytes/empty), on-request, True, idle-timeout, request-timeout)
         s.close-notify
 
-fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e> http-response ) : <async,exn,ndet|e> ()
+// A request read by the server.
+type incoming
+  In-closed                    // the client closed the connection
+  In-bad                       // an invalid request line
+  In-request( method : string, target : string, version : string, headers : headers, body : bytes, rest : reader )
+
+fun read-request( r : reader ) : <async,exn> incoming
   match r.read-until(crlfcrlf, 64 * 1024)
-    Nothing -> ()   // the client closed the connection
+    Nothing -> In-closed
     Just((head-bytes, r1)) ->
       val lines = head-bytes.string.split("\r\n")
-      val req-line = lines.head.default("").split(" ")
-      match req-line
+      match lines.head.default("").split(" ")
         [method, target, version] ->
           val hs = parse-headers(lines.drop(1))
           val (req-body, r2) = r1.read-body(hs, False)
-          val (peer-ip, peer-port) = r.sock.peer-address
-          val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show)
-          val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { on-request(req) }) }
-          val keep-alive = match hs.header("Connection").map(to-lower)
-            _ | res.header("Connection").map(to-lower) == Just("close") -> False
-            Just("close") -> False
-            Just("keep-alive") -> True
-            _ -> version == "HTTP/1.1"
-          val res-headers = res.headers.set-header("Connection", if keep-alive then "keep-alive" else "close")
-          val reason = if res.reason.is-empty then reason-phrase(res.status) else res.reason
-          val res-body = if method == "HEAD" then bytes/empty else res.body
-          write-message(r.sock, "HTTP/1.1 " ++ res.status.show ++ " " ++ reason, res-headers, res-body)
-          if keep-alive then serve-connection(pretend-decreasing(r2), on-request)
-        _ ->
-          write-message(r.sock, "HTTP/1.1 400 Bad Request", [("Connection", "close")], "bad request".bytes)
+          In-request(method, target, version, hs, req-body, r2)
+        _ -> In-bad
+
+fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e> http-response, first : bool,
+                      idle-timeout : duration, request-timeout : duration ) : <async,exn,ndet|e> ()
+  // wait (at most `idle-timeout`) for the next request to start
+  val ready = if first || !r.buf.is-empty then Just(r) else
+    match timeout(idle-timeout, { r.fill })
+      Just((True, r1)) -> Just(r1)
+      _ -> Nothing
+  match ready
+    Nothing -> ()   // idle for too long, or closed by the client
+    Just(r0) -> match timeout(request-timeout, { read-request(r0) })
+      Nothing ->
+        catch(fn(_) (), { write-message(r.sock, "HTTP/1.1 408 Request Timeout", [("Connection", "close")], "request timeout".bytes) })
+      Just(In-closed) -> ()
+      Just(In-bad) ->
+        write-message(r.sock, "HTTP/1.1 400 Bad Request", [("Connection", "close")], "bad request".bytes)
+      Just(In-request(method, target, version, hs, req-body, r2)) ->
+        val (peer-ip, peer-port) = r.sock.peer-address
+        val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show)
+        val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { on-request(req) }) }
+        val keep-alive = match hs.header("Connection").map(to-lower)
+          _ | res.header("Connection").map(to-lower) == Just("close") -> False
+          Just("close") -> False
+          Just("keep-alive") -> True
+          _ -> version == "HTTP/1.1"
+        val idle-secs = idle-timeout.milli-seconds / 1000
+        val hs1 = res.headers.set-header("Connection", if keep-alive then "keep-alive" else "close")
+        val res-headers = if !keep-alive || idle-secs < 1 || res.header("Keep-Alive").is-just then hs1
+                          else hs1.set-header("Keep-Alive", "timeout=" ++ idle-secs.show)
+        val reason = if res.reason.is-empty then reason-phrase(res.status) else res.reason
+        val res-body = if method == "HEAD" then bytes/empty else res.body
+        write-message(r.sock, "HTTP/1.1 " ++ res.status.show ++ " " ++ reason, res-headers, res-body)
+        if keep-alive then serve-connection(pretend-decreasing(r2), on-request, False, idle-timeout, request-timeout)
