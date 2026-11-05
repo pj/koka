@@ -329,7 +329,7 @@ backends and diffs the output against its `.out` file.
 | 5 | `std/data/imap`, `iset`, `dict` | ✅ As aliases of `map<int,_>`, `set<int>` and `map<string,_>` (not Patricia trees) |
 | 6 | `std/data/array` | ❌ Not started (needs runtime and maintainer input) |
 | 7 | `std/data/deque`, `std/data/heap` | ✅ Banker's deque; pairing heap |
-| 8 | `std/core/seq` | ❌ Not started |
+| 8 | `std/core/seq` | ✅ Lazy, pull-based `seq<e,a>` (like OCaml `Seq.t`) and generators (`generate { ... yield(x) ... }`, built from escaping resumptions); `count-from`, `range`, `iterate`, `unfold`, `repeat(edly)`, `cycle`; conversion from lists, vectors, strings and `maybe`; lazy `map`, `filter`, `filter-map`, `take(-while)`, `drop(-while)`, `step-by`, `++`, `concat`, `flat-map`, `zip(-with)`, `indexed`, `scan`, `chunk`, `window`, `intersperse`, `dedup`, `tap`; consumers `list`, `vector`, `foldl`, `foreach`, `find`, `any`/`all`, `length`, `at`, `last`, `sum`, `minimum`/`maximum`, `split-at`, `uncons`, `show`. Not imported by `std/core`; lazy `dir walk` and map/set conversions not yet added |
 | 9 | `std/text/builder` | ✅ `builder` value plus a `build { emit(..) }` effect |
 | 10 | `std/text/format` | ✅ `format("{} {:>8} {0:*^9}", args)` |
 | 11 | `std/text/encoding` | ✅ base64 (standard and URL-safe), hex, percent-encoding. UTF-8 was already in `core/bytes` |
@@ -406,6 +406,11 @@ backends and diffs the output against its `.out` file.
   inside `async-ioc`, where `t` is a struct holding an `any`. Annotating the
   ref did not help. The workaround is a top-level helper with an explicit
   `<read<global>,div>` signature (`read-idle` in `std/async/os/http`).
+* **The `-O1` specializer can loop forever.** A lazy `filter` written as
+  `Seq(fn() match s.skip-while(fn(x) !pred(x)) ... filter(rest, pred))` hangs
+  the compiler (after type checking) at `-O1` for a call such as
+  `range(1,5).filter(is-odd)`; it compiles instantly with `-O0`. Moving all
+  recursion into one helper (`filter-step` in `std/core/seq`) avoids it.
 * `koka -o <absolute path>` fails with "could not find module".
 * On the JS backend, `bytes.subbytes(start, len)` called `slice(start, len)`,
   but `slice` takes an end index, so any slice with `start > 0` was wrong.
@@ -441,3 +446,20 @@ backends and diffs the output against its `.out` file.
 * **More reserved words:** `handle`, `handler` and `raw` are keywords.
 * **Scoped `with x = f()` covers the rest of the block,** so a resource opened
   that way stays open until the block ends.
+* **Effect rows inside data types are invariant.** A `seq<<div>,int>` forced in
+  `main` gives the closed row `<div,div>`, which neither absorbs into `ioc` nor
+  widens. Data that holds effectful functions should put `div` (or whatever
+  it always needs) inside the type and keep the user's row open (`seq<e,int>`).
+* **A function value with a bare effect variable can't run in a wider row.**
+  Inside a `<div|e>` function, calling an `a -> e b` parameter fails ("effects
+  do not match"); type such parameters as `a -> <div|e> b`.
+* **Recursion inside a closure still counts.** `fun map(s, f) = Seq(fn() ...
+  map(rest, f))` is flagged as divergent; lazy constructors need
+  `pretend-decreasing` on the recursive argument. An optional parameter
+  (`n : int = 0`) on the recursive function defeats `pretend-decreasing`; recurse
+  through a helper without one.
+* **Modules under `std/core/` don't implicitly import `std/core`.** A new module
+  there must `import std/core` itself.
+* **Fixity declarations go at the top of a module,** before any other
+  declaration; defining a new `(++)` without `pub infixr 60 (++)` makes chains
+  of `++` ambiguous.

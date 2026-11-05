@@ -17,6 +17,7 @@ pub import std/core/types
 pub import std/core/unsafe
 pub import std/core/undiv
 pub import std/core
+pub import std/core/seq
 
 pub import std/os/env
 pub import std/os/flags
