@@ -29,6 +29,7 @@
 module std/data/map
 
 import std/core/undiv
+import std/core/seq
 
 // A persistent map from keys `k` to values `v`, ordered by key.
 pub type map<k,v>
@@ -460,6 +461,33 @@ pub fun values( m : map<k,v> ) : list<v>
 // The entries as a list of key-value pairs, in ascending key order.
 pub fun map/list( m : map<k,v> ) : list<(k,v)>
   m.foldr([], fn(k, v, acc) Cons((k,v), acc))
+
+// The entries as a lazy sequence, in ascending key order.
+pub fun map/seq( m : map<k,v> ) : seq<e,(k,v)>
+  seq/suspend(fn() in-order(push-left(m, [])))
+
+// The entries with a key of at least `lo` as a lazy sequence, in ascending
+// key order. Finding the first entry takes _O(log n)_.
+pub fun seq-from( m : map<k,v>, lo : k, ^?cmp : (k,k) -> e order ) : e seq<e2,(k,v)>
+  val stack = push-from(m, lo, [])
+  seq/suspend(fn() in-order(stack))
+
+// push the left spine of `m` onto the stack of nodes still to visit
+fun push-left( m : map<k,v>, stack : list<map<k,v>> ) : list<map<k,v>>
+  match m
+    Tip -> stack
+    Bin(_, _, _, l) -> push-left(l, Cons(m, stack))
+
+// like `push-left`, but skip the nodes with a key below `lo`
+fun push-from( m : map<k,v>, lo : k, stack : list<map<k,v>>, ^?cmp : (k,k) -> e order ) : e list<map<k,v>>
+  match m
+    Tip -> stack
+    Bin(_, kx, _, l, r) -> if cmp(kx, lo) == Lt then push-from(r, lo, stack) else push-from(l, lo, Cons(m, stack))
+
+fun in-order( stack : list<map<k,v>> ) : step<e,(k,v)>
+  match stack
+    Cons(Bin(_, kx, x, _, r), rest) -> Yield((kx, x), seq/suspend(fn() in-order(pretend-decreasing(push-left(r, rest)))))
+    _ -> Done
 
 // ----------------------------------------------------------------------------
 // Equality and showing

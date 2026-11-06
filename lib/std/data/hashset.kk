@@ -16,6 +16,7 @@ module std/data/hashset
 
 pub import std/data/hash
 import std/data/hashmap
+import std/core/seq
 
 // A persistent hash set.
 pub value struct hashset<a>
@@ -88,6 +89,10 @@ pub fun any( s : hashset<a>, pred : a -> e bool ) : e bool
 // The elements (in hash order).
 pub fun hashset/list( s : hashset<a> ) : list<a>
   s.elems.keys
+
+// The elements as a lazy sequence (in hash order).
+pub fun hashset/seq( s : hashset<a> ) : seq<e,a>
+  s.elems.seq.map(fst)
 
 // Two sets are equal if they contain the same elements.
 pub fun (==)( s1 : hashset<a>, s2 : hashset<a>, ?hash : a -> e int, ?(==) : (a,a) -> e bool ) : e bool

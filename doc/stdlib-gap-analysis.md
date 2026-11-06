@@ -329,11 +329,11 @@ backends and diffs the output against its `.out` file.
 | 5 | `std/data/imap`, `iset`, `dict` | ✅ As aliases of `map<int,_>`, `set<int>` and `map<string,_>` (not Patricia trees) |
 | 6 | `std/data/array` | ❌ Not started (needs runtime and maintainer input) |
 | 7 | `std/data/deque`, `std/data/heap` | ✅ Banker's deque; pairing heap |
-| 8 | `std/core/seq` | ✅ Lazy, pull-based `seq<e,a>` (like OCaml `Seq.t`) and generators (`generate { ... yield(x) ... }`, built from escaping resumptions); `count-from`, `range`, `iterate`, `unfold`, `repeat(edly)`, `cycle`; conversion from lists, vectors, strings and `maybe`; lazy `map`, `filter`, `filter-map`, `take(-while)`, `drop(-while)`, `step-by`, `++`, `concat`, `flat-map`, `zip(-with)`, `indexed`, `scan`, `chunk`, `window`, `intersperse`, `dedup`, `tap`; consumers `list`, `vector`, `foldl`, `foreach`, `find`, `any`/`all`, `length`, `at`, `last`, `sum`, `minimum`/`maximum`, `split-at`, `uncons`, `show`. Not imported by `std/core`; lazy `dir walk` and map/set conversions not yet added |
+| 8 | `std/core/seq` | ✅ Lazy, pull-based `seq<e,a>` (like OCaml `Seq.t`) and generators (`generate { ... yield(x) ... }`, built from escaping resumptions); `count-from`, `range`, `iterate`, `unfold`, `repeat(edly)`, `cycle`; conversion from lists, vectors, strings and `maybe`; lazy `map`, `filter`, `filter-map`, `take(-while)`, `drop(-while)`, `step-by`, `++`, `concat`, `flat-map`, `zip(-with)`, `indexed`, `scan`, `chunk`, `window`, `intersperse`, `dedup`, `tap`; consumers `list`, `vector`, `foldl`, `foreach`, `find`, `any`/`all`, `length`, `at`, `last`, `sum`, `minimum`/`maximum`, `split-at`, `uncons`, `show`. Not imported by `std/core`. Lazy `seq` conversions for `map`/`set` (plus `seq-from` for ordered ranges), `hashmap`, `hashset`, `deque` and `heap` (ascending), and a lazy directory `walk` in `std/os/fs` |
 | 9 | `std/text/builder` | ✅ `builder` value plus a `build { emit(..) }` effect |
 | 10 | `std/text/format` | ✅ `format("{} {:>8} {0:*^9}", args)` |
 | 11 | `std/text/encoding` | ✅ base64 (standard and URL-safe), hex, percent-encoding. UTF-8 was already in `core/bytes` |
-| 12–13 | `std/os/fs` | ✅ Binary read/write/append, `read-lines`, `file-info`, `path-exists`, `remove-file`, `rename`, `set-permissions`, `create-dir`, `remove-dir(-all)`, `set-cwd`, temp files and directories, `glob` |
+| 12–13 | `std/os/fs` | ✅ Binary read/write/append, `read-lines`, `file-info`, `path-exists`, `remove-file`, `rename`, `set-permissions`, `create-dir`, `remove-dir(-all)`, `set-cwd`, temp files and directories, `glob`, lazy `walk` (sorted, depth first, with `prune`, `max-depth` and `follow-symlinks`) |
 | 14 | `std/os/io` | ✅ `eprint(ln)`, `flush`, `read-stdin(-lines)`, `*-is-tty`, `exit` |
 | 15 | `std/os/process` | ✅ `run`, `run-bytes`, `run-output` (argv, stdin, cwd, env; captures exit code, stdout and stderr) |
 | 15b | `std/async/os/process` | ✅ Asynchronous child processes: `spawn` with piped, inherited or ignored stdio, `write-stdin`, `close-stdin`, `read-stdout`/`read-stderr`, `wait`, `kill`, `pid`; `run-process(-bytes,-output)` capture output without blocking other strands, and a cancelled run (e.g. by `timeout`) kills the child |
@@ -411,6 +411,11 @@ backends and diffs the output against its `.out` file.
   the compiler (after type checking) at `-O1` for a call such as
   `range(1,5).filter(is-odd)`; it compiles instantly with `-O0`. Moving all
   recursion into one helper (`filter-step` in `std/core/seq`) avoids it.
+* **Internal error `Core.Core.splitTForall: Expected forall`** for a top-level
+  function whose effect row tail `e` appears only in its result effect and
+  which performs a handled effect (`walk-dir` in `std/os/fs`, declared
+  `<yield<path>,fsys,exn,div|e> ()`). A closed row works, since closed
+  function types are opened at call sites.
 * `koka -o <absolute path>` fails with "could not find module".
 * On the JS backend, `bytes.subbytes(start, len)` called `slice(start, len)`,
   but `slice` takes an end index, so any slice with `start > 0` was wrong.

@@ -1,0 +1,8 @@
+[".git",".git/config","a","a/deep","a/deep/z.kk","a/x.kk","a/y.txt","b.txt","empty"]
+["a/deep/z.kk","a/x.kk"]
+[".git","a","a/deep","a/deep/z.kk","a/x.kk","a/y.txt","b.txt","empty"]
+[".git","a","b.txt","empty"]
+5
+Just("a/x.kk")
+True
+True

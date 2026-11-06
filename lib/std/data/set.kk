@@ -22,6 +22,7 @@
 module std/data/set
 
 import std/data/map
+import std/core/seq
 
 // A persistent set of elements ordered by `?cmp`.
 pub value struct set<a>
@@ -168,6 +169,14 @@ pub fun any( s : set<a>, pred : a -> e bool ) : e bool
 // The elements in ascending order.
 pub fun set/list( s : set<a> ) : list<a>
   s.elems.keys
+
+// The elements as a lazy sequence, in ascending order.
+pub fun set/seq( s : set<a> ) : seq<e,a>
+  s.elems.seq.map(fst)
+
+// The elements of at least `lo` as a lazy sequence, in ascending order.
+pub fun seq-from( s : set<a>, lo : a, ^?cmp : (a,a) -> e order ) : e seq<e2,a>
+  s.elems.seq-from(lo).map(fst)
 
 // Two sets are equal if they contain the same elements.
 pub fun (==)( s1 : set<a>, s2 : set<a>, ^?cmp : (a,a) -> e order ) : e bool

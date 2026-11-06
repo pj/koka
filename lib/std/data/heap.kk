@@ -24,6 +24,7 @@
 module std/data/heap
 
 import std/core/undiv
+import std/core/seq
 
 // A persistent min-heap.
 pub value struct heap<a>
@@ -103,6 +104,11 @@ pub fun heap/list( h : heap<a>, ^?cmp : (a,a) -> e order ) : e list<a>
   match h.pop-min
     Just((x, h')) -> Cons(x, heap/list(pretend-decreasing(h')))
     Nothing -> Nil
+
+// The elements in ascending order, as a lazy sequence. Each element costs
+// _O(log n)_ (amortized) when it is reached.
+pub fun heap/seq( h : heap<a>, ^?cmp : (a,a) -> <div|e> order ) : seq<e,a>
+  seq/unfold(h, fn(h1) h1.pop-min)
 
 // Take the `n` smallest elements in ascending order.
 pub fun take( h : heap<a>, n : int, ^?cmp : (a,a) -> e order ) : e list<a>

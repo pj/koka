@@ -18,6 +18,8 @@
 */
 module std/data/deque
 
+import std/core/seq
+
 // A persistent double-ended queue.
 pub value struct deque<a>
   fs : list<a>
@@ -113,6 +115,11 @@ pub fun reverse( d : deque<a> ) : deque<a>
 // The elements from front to back.
 pub fun deque/list( d : deque<a> ) : list<a>
   d.fs ++ d.bs.reverse
+
+// The elements from front to back, as a lazy sequence. The back half is
+// reversed only when the sequence reaches it.
+pub fun deque/seq( d : deque<a> ) : seq<e,a>
+  d.fs.seq ++ seq/suspend(fn() d.bs.reverse.seq.next)
 
 // Transform every element.
 pub fun map( d : deque<a>, f : a -> e b ) : e deque<b>

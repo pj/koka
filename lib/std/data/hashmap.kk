@@ -21,6 +21,7 @@ module std/data/hashmap
 
 pub import std/data/hash
 import std/data/map
+import std/core/seq
 
 // A persistent hash map.
 pub value struct hashmap<k,v>
@@ -177,6 +178,10 @@ pub fun any( m : hashmap<k,v>, pred : (k, v) -> e bool ) : e bool
 // The entries as a list (in hash order).
 pub fun hashmap/list( m : hashmap<k,v> ) : list<(k,v)>
   m.buckets.values.concat
+
+// The entries as a lazy sequence (in hash order).
+pub fun hashmap/seq( m : hashmap<k,v> ) : seq<e,(k,v)>
+  m.buckets.seq.flat-map(fn((_, b)) b.seq)
 
 // The keys (in hash order).
 pub fun keys( m : hashmap<k,v> ) : list<k>

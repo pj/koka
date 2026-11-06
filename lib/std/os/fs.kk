@@ -10,7 +10,8 @@
 
    This module re-exports `std/os/path`, `std/os/file` and `std/os/dir` and
    adds binary files, appending, file metadata, removing and renaming,
-   permissions, temporary files and directories, and glob matching.
+   permissions, temporary files and directories, glob matching, and a lazy
+   directory walk.
 
    ```
    import std/os/fs
@@ -35,6 +36,7 @@ pub import std/os/path
 pub import std/os/file
 pub import std/os/dir
 import std/core/undiv
+import std/core/seq
 import std/num/float64
 
 extern import
@@ -292,6 +294,36 @@ fun glob-segs( dir : path, segs : list<string> ) : <fsys,pure> list<path>
       val matches = list-directory(dir).filter(fn(p) glob-match(seg, p.nodir.string))
       if rest.is-empty then matches
       else matches.filter(is-directory).flatmap(fn(d) glob-segs(d, rest))
+
+// ----------------------------------------------------------------------------
+// Walking a directory tree
+// ----------------------------------------------------------------------------
+
+// Lazily walk the directory tree under `dir`, depth first. Every file and
+// directory below `dir` (but not `dir` itself) is produced once, with the
+// entries of each directory in sorted order and a directory just before its
+// contents. Directories are read only when the walk reaches them, so a walk
+// that is stopped early (with `take`, `find`, ...) reads no further.
+//
+// A directory for which `prune` returns `True` is produced but not entered.
+// Symbolic links to directories are not followed unless `follow-symlinks` is
+// set; `max-depth` limits how deep the walk goes (1 lists only `dir` itself).
+//
+// ```
+// walk("src".path, prune = fn(p) p.nodir.string == ".git")
+//   .filter(fn(p) p.extname == "kk")
+//   .foreach(println)
+// ```
+pub fun walk( dir : path, prune : path -> bool = fn(_) False, max-depth : int = 1000, follow-symlinks : bool = False ) : seq<<fsys,exn|e>,path>
+  generate
+    walk-dir(dir, prune, max-depth, follow-symlinks)
+
+fun walk-dir( dir : path, prune : path -> bool, depth : int, follow : bool ) : <yield<path>,fsys,exn,div> ()
+  if depth > 0 then
+    list-directory(dir).sort-on(path/string).foreach fn(p)
+      yield(p)
+      if p.is-directory && (follow || !p.is-symlink) && !prune(p) then
+        walk-dir(p, prune, depth - 1, follow)
 
 // ----------------------------------------------------------------------------
 // Primitives
