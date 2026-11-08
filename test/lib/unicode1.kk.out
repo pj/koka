@@ -1,0 +1,14 @@
+17.0.0
+graphemes: 766/766 pass
+words: 1944/1944 pass
+normalization: 3631/3631 pass
+["e\u0301","\U01F44D\U01F3FD","\U01F1F3\U01F1FF","\U01F468\u200D\U01F469\u200D\U01F467"," ","o","k"]
+[2,0,2,1]
+["Hello","world","It\'s","3.14","o\'clock","na\xEFve","caf\xE9"]
+["can\'t"," ","stop",","," ","won\'t"," ","stop"]
+["\u65E5","\u672C","\u8A9E","\u306E","\u30C6\u30AD\u30B9\u30C8"]
+[3,4,2,2,2,1,0,2,1,0]
+[1,0,0]
+["strasse","\u01C6","\u03C3\u03AF\u03C3\u03C5\u03C6\u03BF\u03C3","fi","i\u0307"]
+(True,True,False)
+[1,2,2,3,1]

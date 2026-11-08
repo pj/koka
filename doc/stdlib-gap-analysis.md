@@ -356,7 +356,8 @@ backends and diffs the output against its `.out` file.
 | 31 | `std/num/rational`, `std/num/complex` | ✅ Rationals over `int` in lowest terms: arithmetic (`x/0` is 0, as for `int`), `^` with negative powers, comparisons, `floor`/`ceiling`/`truncate`/`round` (half to even), exact conversion from `float64` and nearest conversion back, `show-decimal`, `parse-rational` (`n/d` and decimals). Complex `float64`: arithmetic (Smith's division), `abs`, `arg`, `conj`, `polar`, `exp`, `ln`, `sqrt` (principal, signed zeros), `pow`, integer `^`, `sin`/`cos`/`tan`, `show` |
 | 32 | `std/data/bitset` | ✅ Persistent dense bitset in 64-bit words: `bitset(list)` (linear after sorting), `range-bitset`, `member`, `insert`/`remove` (copying), `+` (union), `-`, `intersection`, `sym-difference`, `complement`, `is-subset`/`is-disjoint`, `count` (popcount), `minimum`/`maximum`/`next-member` (ctz/clz), `list`, `seq`, `foldl`, `filter`, `==`, `show` |
 | 33 | `std/text/pretty` | ✅ Wadler/Leijen pretty printer (strict renderer): `text`, `line`, `linebreak`, `softline`, `hardline`, `++`, `<+>`, `<->`, `group`, `nest`, `align`, `hang`, `indent`, `column`, `nesting`, `fill`, `fill-break`, `hsep`/`vsep`/`sep`, `hcat`/`vcat`/`cat`, `fill-sep`/`fill-cat`, `punctuate`, `enclose-sep`, `list-doc`, `tupled`, `semi-braces`, `block`, `parens` etc., `pretty(width)` |
-| 34–36 | unicode fixes, sqlite, xml | ❌ |
+| 34 | `std/text/unicode` | ✅ Tables generated from the UCD 17.0 (`util/gen-unicode-tables.py`, decoded on first use): `graphemes` (UAX #29 extended grapheme clusters, incl. emoji ZWJ sequences, flags and Indic conjuncts; fixes #458), `word-segments`/`words` (UAX #29 word boundaries), grapheme-aware `width` (emoji, flags and presentation selectors are 2 columns; fixes #457), `fold-case` and `equals-ignore-case` (full case folding), `normalize` NFC/NFD/NFKC/NFKD in Koka (it was a no-op on C). Passes the official GraphemeBreakTest (766/766), WordBreakTest (1944/1944) and a NormalizationTest sample (3631/3631) on C and JS. `graphemes` no longer normalizes its input |
+| 35–36 | sqlite, xml | ❌ |
 
 ### Platform limitations
 
@@ -433,6 +434,11 @@ backends and diffs the output against its `.out` file.
 * The upstream async PRs #924 (repeating libuv callbacks) and #955 (fixes for
   `firstof` exceptions, cancellation scopes, and canceled channel receives)
   are applied in this fork.
+
+* **Exponential compile time for long boolean chains.** A function body that
+  is one `||` chain of `&&`/`==` clauses takes time exponential in the number
+  of clauses: 6 clauses 1 s, 8 clauses 15 s, 10 clauses 20 minutes (std/text/unicode's
+  word-boundary rules). Splitting it into small functions combined with `elif` compiles in seconds.
 
 ### Koka language gotchas hit while writing these modules
 
