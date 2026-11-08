@@ -1,0 +1,14 @@
+decoded: 200 - Accept-Encoding 6000 True
+sent: gzip, deflate
+raw: 200 gzip Accept-Encoding 84 False True
+identity: 200 - - 6000 True
+refused: 200 - - 6000 True
+small: 200 - - 4 False
+binary: 200 - - 6000 True
+head: 200 - Accept-Encoding 0 False
+h2: HTTP/2 200 - Accept-Encoding 6000 True
+deflate: - True 6000
+deflate: - True 6000
+gzip: - True 6000
+gzip, gzip: - True 6000
+br: br False 7

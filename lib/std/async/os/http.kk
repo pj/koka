@@ -61,6 +61,7 @@ import async/os/tls
 import async/os/http2
 import std/net/url
 import std/text/encoding
+import std/compress
 
 // ----------------------------------------------------------------------------
 // Messages
@@ -292,6 +293,11 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 // The `Authorization` and `Cookie` headers are dropped when a redirect leads
 // to a different origin.
 //
+// Unless `headers` contain an `Accept-Encoding`, the request asks for gzip or
+// deflate compressed responses and the body is decompressed (the
+// `Content-Encoding` header is then removed). With an explicit
+// `Accept-Encoding`, the body is returned as it was sent.
+//
 // For `https`, the server certificate is checked against the system CA
 // certificates, or only against `tls-ca` (PEM certificates) if it is given.
 // A client certificate (`tls-cert`, PEM) and its private key (`tls-key`) are
@@ -310,8 +316,58 @@ fun request-url( client : maybe<http-client>, method : string, url : string, hea
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
-  if max-redirects <= 0 then send-request(client, method, u, headers, body, tls)
-  else follow-redirects(client, method, u, headers, body, max-redirects, tls)
+  // ask for compressed responses and decode them, unless the caller chose the encodings
+  val decode = headers.header("Accept-Encoding").is-nothing
+  val hs = if decode then headers ++ [("Accept-Encoding", "gzip, deflate")] else headers
+  val res = if max-redirects <= 0 then send-request(client, method, u, hs, body, tls)
+            else follow-redirects(client, method, u, hs, body, max-redirects, tls)
+  if decode then res.decode-content else res
+
+// Undo the `Content-Encoding` of a response body (gzip and deflate). Unknown
+// encodings are left as they are.
+fun decode-content( res : http-response ) : exn http-response
+  match res.header("Content-Encoding")
+    Nothing -> res
+    Just(ce) ->
+      val codings = ce.split(",").map(fn(c) c.trim.to-lower).filter(fn(c) !c.is-empty && c != "identity")
+      if codings.is-empty || codings.any(fn(c) c != "gzip" && c != "x-gzip" && c != "deflate") then res
+      elif res.body.is-empty then res(headers = res.headers.remove-headers(["Content-Encoding"]))
+      else
+        val body = codings.reverse.foldl(res.body) fn(b, c)
+          if c == "deflate" then
+            // "deflate" should be zlib data, but some servers send raw deflate
+            match try({ b.decompress(Zlib) })
+              Ok(d) -> d
+              Error(_) -> b.inflate
+          else b.gunzip
+        val hs = res.headers.remove-headers(["Content-Encoding", "Content-Length"]) ++ [("Content-Length", body.length.show)]
+        res(headers = hs, body = body)
+
+// Compress a response with gzip when the client accepts it (`Accept-Encoding`),
+// the body is at least `min-size` bytes, its `Content-Type` is a kind of text
+// (`text/*`, JSON, JavaScript, XML, SVG), and it is not encoded already.
+// `http-serve` does this for every response with `compress = True`.
+pub fun gzip-response( req : http-request, res : http-response, min-size : int = 1024 ) : http-response
+  val ctype = res.header("Content-Type").default("").to-lower
+  val compressible = ctype.starts-with("text/").is-just || ["json", "javascript", "xml", "svg"].any(fn(k) ctype.contains(k))
+  if res.body.length < min-size || !compressible || res.header("Content-Encoding").is-just || !accepts-gzip(req) then res
+  else
+    val packed = res.body.gzip
+    val vary = match res.header("Vary")
+      Nothing -> "Accept-Encoding"
+      Just(v) -> v ++ ", Accept-Encoding"
+    val hs = res.headers.remove-headers(["Content-Length", "Vary"]) ++ [("Content-Encoding", "gzip"), ("Vary", vary)]
+    res(headers = hs, body = packed)
+
+// Does the request accept gzip (and not with `q=0`)?
+fun accepts-gzip( req : http-request ) : bool
+  match req.header("Accept-Encoding")
+    Nothing -> False
+    Just(ae) -> ae.split(",").any fn(item)
+      val parts = item.split(";").map(fn(p) p.trim.to-lower)
+      val name = parts.head.default("")
+      val q-zero = parts.drop(1).any(fn(p) p == "q=0" || p == "q=0.0" || p == "q=0.00" || p == "q=0.000")
+      (name == "gzip" || name == "x-gzip" || name == "*") && !q-zero
 
 fun follow-redirects( client : maybe<http-client>, method : string, u : url, headers : headers, body : bytes, redirects-left : int, tls : tls-opts ) : <async,exn,net,ndet> http-response
   val res = send-request(client, method, u, headers, body, tls)
@@ -693,8 +749,16 @@ pub fun http-get-text( url : string ) : <async,exn,net,ndet> string
 // after a response (announced to clients with a `Keep-Alive` header), or when
 // receiving a request takes longer than `request-timeout` (answered with
 // `408 Request Timeout`).
+//
+// With `compress = True`, text responses are compressed with gzip for clients
+// that accept it (see `gzip-response`).
 pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config> = Nothing,
-                    idle-timeout : duration = 5.seconds, request-timeout : duration = 60.seconds ) : <async,exn,ndet|e> ()
+                    idle-timeout : duration = 5.seconds, request-timeout : duration = 60.seconds, compress : bool = False ) : <async,exn,ndet|e> ()
+  val serve-fn = if compress then (fn(req) gzip-response(req, on-request(req))) else on-request
+  serve-all(srv, serve-fn, tls, idle-timeout, request-timeout)
+
+fun serve-all( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config>,
+               idle-timeout : duration, request-timeout : duration ) : <async,exn,ndet|e> ()
   srv.serve fn(conn)
     match tls
       Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), on-request, True, idle-timeout, request-timeout)
