@@ -14,6 +14,7 @@
 module async/os/file
 
 import std/core/undiv
+pub import std/io/stream
 import std/num/int32
 import std/num/int64
 import std/os/path
@@ -102,6 +103,11 @@ pub fun fd-read( Fd(fd,fpath) : fd, chunk-len : int = -1 ) : <exn,ndet,async> by
     val buf = unsafe-bytes(len)  
     val read = await("fd-read", fn(evloop,resume) fd-read-setup(evloop,fd,buf,(-1).int64,resume))
     buf.adjust-length(read.int)  // note: we must refer to `buf` here to keep it alive during the async operation!
+
+// The rest of the file as a stream, read in chunks of at most `chunk-len`
+// bytes. The stream is consumed as it is read (see `std/io/stream`).
+pub fun fd/stream( fd : fd, chunk-len : int = -1 ) : byte-stream<<exn,ndet,async|e>>
+  from-reader(fn() fd-read(fd, chunk-len))
 
 // Read the full contents of a file handle.
 pub fun fd-read-all( fd : fd, chunk-len : int = -1 ) : <exn,ndet,async> bytes

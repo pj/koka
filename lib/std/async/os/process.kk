@@ -34,6 +34,7 @@
 module async/os/process
 
 import std/core/undiv
+pub import std/io/stream
 import std/num/int32
 import std/os/path
 import std/os/env
@@ -146,6 +147,15 @@ pub fun read-stdout( p : process ) : <async,exn> bytes
 // Read the next chunk of the standard error output; empty bytes at the end of the output.
 pub fun read-stderr( p : process ) : <async,exn> bytes
   p.stderr-pipe.pipe("stderr").read
+
+// The standard output as a stream, until it is closed. The stream is
+// consumed as it is read (see `std/io/stream`).
+pub fun stdout-stream( p : process ) : byte-stream<<async,exn|e>>
+  from-reader(fn() p.read-stdout)
+
+// The standard error output as a stream, until it is closed.
+pub fun stderr-stream( p : process ) : byte-stream<<async,exn|e>>
+  from-reader(fn() p.read-stderr)
 
 // Read the standard output until it is closed.
 pub fun read-all-stdout( p : process ) : <async,exn> bytes

@@ -38,6 +38,7 @@
 module async/os/tls
 
 import std/core/undiv
+pub import std/io/stream
 import std/num/int32
 import async/async
 import async/internal
@@ -186,6 +187,11 @@ fun tls-read-loop( sock : tcp-socket, t : any ) : <async,exn> bytes
     async-ioc { tls-feed(t, more, more.is-empty) }
     tls-read-loop(sock, pretend-decreasing(t))
   else throw(async-ioc { tls-error(t) })
+
+// The data received on the connection as a byte stream, until the other end
+// closes it. The stream is consumed as it is read (see `std/io/stream`).
+pub fun net-stream/stream( s : net-stream ) : byte-stream<<async,exn|e>>
+  from-reader(fn() s.read)
 
 // Read until the end of the stream.
 pub fun net-stream/read-all( s : net-stream ) : <async,exn> bytes

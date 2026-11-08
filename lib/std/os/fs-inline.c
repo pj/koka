@@ -216,3 +216,121 @@ static kk_std_core_exn__error kk_os_temp_dir_prim( kk_string_t prefix, kk_contex
   return kk_error_ok(kk_string_box(s),ctx);
   #endif
 }
+
+/*---------------------------------------------------------------------------
+  File handles: a boxed C pointer to the file descriptor. Closing sets the
+  descriptor to -1 (so closing twice is harmless), and a handle that is no
+  longer referenced is closed by its finalizer.
+---------------------------------------------------------------------------*/
+#if !defined(_WIN32)
+#include <fcntl.h>
+#endif
+
+static void kk_os_fd_free( void* p, kk_block_t* block, kk_context_t* ctx ) {
+  kk_unused(block);
+  int* pfd = (int*)p;
+  #if !defined(_WIN32)
+  if (*pfd >= 0) close(*pfd);
+  #endif
+  kk_free(pfd,ctx);
+}
+
+static int kk_os_fd_of( kk_box_t h, kk_context_t* ctx ) {
+  int* pfd = (int*)kk_cptr_raw_unbox_borrowed(h,ctx);
+  return (pfd == NULL ? -1 : *pfd);
+}
+
+// mode 0: read, 1: write (create and truncate), 2: append (create)
+static kk_std_core_exn__error kk_os_fd_open( kk_string_t path, kk_integer_t mode, kk_context_t* ctx ) {
+  const int m = kk_integer_clamp32(mode,ctx);
+  #if defined(_WIN32)
+  kk_string_drop(path,ctx);
+  return kk_error_from_errno(ENOSYS,ctx);
+  #else
+  int flags = (m == 0 ? O_RDONLY : (m == 1 ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND)));
+  #ifdef O_CLOEXEC
+  flags |= O_CLOEXEC;
+  #endif
+  int fd;
+  do { fd = open(kk_string_cbuf_borrow(path,NULL,ctx), flags, 0666); } while (fd < 0 && errno == EINTR);
+  const int err = errno;
+  kk_string_drop(path,ctx);
+  if (fd < 0) return kk_error_from_errno(err,ctx);
+  int* pfd = (int*)kk_malloc(sizeof(int),ctx);
+  *pfd = fd;
+  return kk_error_ok(kk_cptr_raw_box(&kk_os_fd_free, pfd, ctx),ctx);
+  #endif
+}
+
+// Read at most `max` bytes; an empty result means the end of the file.
+static kk_std_core_exn__error kk_os_fd_read( kk_box_t h, kk_integer_t max, kk_context_t* ctx ) {
+  const int fd = kk_os_fd_of(h,ctx);
+  kk_box_drop(h,ctx);
+  kk_ssize_t n = kk_integer_clamp_ssize_t(max,ctx);
+  if (n <= 0) n = 64*1024;
+  #if defined(_WIN32)
+  return kk_error_from_errno(ENOSYS,ctx);
+  #else
+  if (fd < 0) return kk_error_from_errno(EBADF,ctx);
+  uint8_t* buf;
+  kk_bytes_t b = kk_bytes_alloc_buf(n, &buf, ctx);
+  ssize_t res;
+  do { res = read(fd, buf, (size_t)n); } while (res < 0 && errno == EINTR);
+  if (res < 0) {
+    const int err = errno;
+    kk_bytes_drop(b,ctx);
+    return kk_error_from_errno(err,ctx);
+  }
+  if (res == 0) {
+    kk_bytes_drop(b,ctx);
+    return kk_error_ok(kk_bytes_box(kk_bytes_empty()),ctx);
+  }
+  b = kk_bytes_adjust_length(b, (kk_ssize_t)res, ctx);
+  return kk_error_ok(kk_bytes_box(b),ctx);
+  #endif
+}
+
+// Write all the bytes.
+static kk_std_core_exn__error kk_os_fd_write( kk_box_t h, kk_bytes_t content, kk_context_t* ctx ) {
+  const int fd = kk_os_fd_of(h,ctx);
+  kk_box_drop(h,ctx);
+  #if defined(_WIN32)
+  kk_bytes_drop(content,ctx);
+  return kk_error_from_errno(ENOSYS,ctx);
+  #else
+  if (fd < 0) {
+    kk_bytes_drop(content,ctx);
+    return kk_error_from_errno(EBADF,ctx);
+  }
+  if (fd == 1) fflush(stdout);   // keep the order with the console output
+  kk_ssize_t len;
+  const uint8_t* p = kk_bytes_buf_borrow(content,&len,ctx);
+  int err = 0;
+  while (len > 0) {
+    const ssize_t res = write(fd, p, (size_t)len);
+    if (res < 0) {
+      if (errno == EINTR) continue;
+      err = errno;
+      break;
+    }
+    p += res;
+    len -= (kk_ssize_t)res;
+  }
+  kk_bytes_drop(content,ctx);
+  return kk_os_unit_result(err,ctx);
+  #endif
+}
+
+static kk_std_core_exn__error kk_os_fd_close( kk_box_t h, kk_context_t* ctx ) {
+  int* pfd = (int*)kk_cptr_raw_unbox_borrowed(h,ctx);
+  int err = 0;
+  #if !defined(_WIN32)
+  if (pfd != NULL && *pfd >= 0) {
+    const int fd = *pfd;
+    *pfd = -1;
+    if (close(fd) != 0 && errno != EINTR) err = errno;
+  }
+  #endif
+  kk_box_drop(h,ctx);
+  return kk_os_unit_result(err,ctx);
+}

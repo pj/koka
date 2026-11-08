@@ -35,6 +35,7 @@
 module async/os/net
 
 import std/core/undiv
+pub import std/io/stream
 import std/num/int32
 import async/async
 import async/internal
@@ -104,6 +105,11 @@ pub fun scoped/tcp-connect( host : string, port : int, action : tcp-socket -> <a
 // Read the next chunk of available data. Returns empty bytes at the end of the stream.
 pub fun read( s : tcp-socket ) : <async,exn> bytes
   await("net-read", fn(evloop, resume) net-read-setup(evloop, s.hnd, resume))
+
+// The data received on the socket as a stream, until the other end closes
+// its side. The stream is consumed as it is read (see `std/io/stream`).
+pub fun tcp-socket/stream( s : tcp-socket ) : byte-stream<<async,exn|e>>
+  from-reader(fn() s.read)
 
 // Read until the other end closes the connection.
 pub fun read-all( s : tcp-socket ) : <async,exn> bytes

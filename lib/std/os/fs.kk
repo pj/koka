@@ -9,9 +9,9 @@
 /* File system operations.
 
    This module re-exports `std/os/path`, `std/os/file` and `std/os/dir` and
-   adds binary files, appending, file metadata, removing and renaming,
-   permissions, temporary files and directories, glob matching, and a lazy
-   directory walk.
+   adds binary files, appending, file handles and streams, file metadata,
+   removing and renaming, permissions, temporary files and directories, glob
+   matching, and a lazy directory walk.
 
    ```
    import std/os/fs
@@ -26,6 +26,13 @@
        println(glob(dir, "*.txt"))
    ```
 
+   Large files can be read and written as streams (see `std/io/stream`):
+
+   ```
+   with-file("access.log".path, Read) fn(h)
+     h.stream.lines.filter(fn(l) l.contains(" 404 ")).foreach(println)
+   ```
+
    On the C backend this uses POSIX functions; on Windows most of the new
    operations are not yet supported. On the JavaScript backend it requires
    Node.js.
@@ -37,6 +44,7 @@ pub import std/os/file
 pub import std/os/dir
 import std/core/undiv
 import std/core/seq
+pub import std/io/stream
 import std/num/float64
 
 extern import
@@ -81,6 +89,88 @@ pub fun read-lines( path : path ) : <fsys,exn> list<string>
 // Write a list of lines to a text file (each followed by a newline).
 pub fun write-lines( path : path, lines : list<string> ) : <fsys,exn> ()
   write-text-file(path, lines.map(fn(l) l ++ "\n").join)
+
+// ----------------------------------------------------------------------------
+// File handles and streams
+// ----------------------------------------------------------------------------
+
+// How a file is opened.
+pub type open-mode
+  // Read from the start of the file.
+  Read
+  // Write to the file, creating it or truncating it.
+  Write
+  // Write at the end of the file, creating it if needed.
+  Append
+
+fun open-mode/code( m : open-mode ) : int
+  match m
+    Read   -> 0
+    Write  -> 1
+    Append -> 2
+
+// An open file. Close it with `close`, or use `with-file`, which closes it
+// afterwards. (A handle that is no longer used is closed eventually even if
+// it is not closed explicitly.)
+abstract struct file-handle( hnd : any, fpath : path )
+
+// The path the file was opened with.
+pub fun file-handle/path( f : file-handle ) : path
+  f.fpath
+
+pub fun file-handle/show( f : file-handle ) : string
+  "file-handle(" ++ f.fpath.show ++ ")"
+
+// Open a file for reading, writing or appending.
+pub fun open-file( path : path, mode : open-mode = Read ) : <fsys,exn> file-handle
+  match prim-fd-open(path.string, mode.code)
+    Error(exn) -> throw-exn(exn.prepend("unable to open file " ++ path.show))
+    Ok(h) -> File-handle(h, path)
+
+// Open a file, run `action` with it, and close it afterwards.
+pub fun with-file( path : path, mode : open-mode, action : file-handle -> <fsys,exn|e> a ) : <fsys,exn|e> a
+  val f = open-file(path, mode)
+  with finally { ignore(prim-fd-close(f.hnd)) }
+  action(f)
+
+// Close the file (closing it again does nothing).
+pub fun file-handle/close( f : file-handle ) : <fsys,exn> ()
+  match prim-fd-close(f.hnd)
+    Error(exn) -> throw-exn(exn.prepend("unable to close file " ++ f.fpath.show))
+    _ -> ()
+
+// Read the next chunk of at most `max` bytes. Returns empty bytes at the end of the file.
+pub fun file-handle/read( f : file-handle, max : int = 65536 ) : <fsys,exn> bytes
+  match prim-fd-read(f.hnd, max)
+    Error(exn) -> throw-exn(exn.prepend("unable to read file " ++ f.fpath.show))
+    Ok(b) -> b
+
+// Write bytes to the file.
+pub fun file-handle/write( f : file-handle, content : bytes ) : <fsys,exn> ()
+  match prim-fd-write(f.hnd, content)
+    Error(exn) -> throw-exn(exn.prepend("unable to write file " ++ f.fpath.show))
+    _ -> ()
+
+// Write text (as UTF-8) to the file.
+pub fun file-handle/write-text( f : file-handle, content : string ) : <fsys,exn> ()
+  f.write(content.bytes)
+
+// The rest of the file as a stream, read in chunks of at most `chunk-size`
+// bytes. The stream is consumed as it is read (see `std/io/stream`).
+pub fun file-handle/stream( f : file-handle, chunk-size : int = 65536 ) : byte-stream<<fsys,exn|e>>
+  from-reader(fn() f.read(chunk-size))
+
+// Write a stream to a file, replacing its contents. Creates the parent
+// directory if needed (and `create-dir` is `True`).
+pub fun write-stream( path : path, s : byte-stream<<fsys,exn|e>>, create-dir : bool = True ) : <div,fsys,exn|e> ()
+  if create-dir then ensure-dir(path.nobase)
+  with-file(path, Write) fn(f)
+    s.pipe(fn(b) f.write(b))
+
+// Append a stream to a file (creating it if it does not exist).
+pub fun append-stream( path : path, s : byte-stream<<fsys,exn|e>> ) : <div,fsys,exn|e> ()
+  with-file(path, Append) fn(f)
+    s.pipe(fn(b) f.write(b))
 
 // ----------------------------------------------------------------------------
 // Metadata
@@ -372,3 +462,19 @@ extern prim-set-cwd( path : string ) : fsys error<()>
 extern prim-temp-dir( pre : string ) : fsys error<string>
   c  "kk_os_temp_dir_prim"
   js "_temp_dir_prim"
+
+extern prim-fd-open( path : string, mode : int ) : fsys error<any>
+  c  "kk_os_fd_open"
+  js "_fd_open"
+
+extern prim-fd-read( h : any, max : int ) : fsys error<bytes>
+  c  "kk_os_fd_read"
+  js "_fd_read"
+
+extern prim-fd-write( h : any, content : bytes ) : fsys error<()>
+  c  "kk_os_fd_write"
+  js "_fd_write"
+
+extern prim-fd-close( h : any ) : fsys error<()>
+  c  "kk_os_fd_close"
+  js "_fd_close"

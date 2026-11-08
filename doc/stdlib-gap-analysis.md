@@ -333,8 +333,8 @@ backends and diffs the output against its `.out` file.
 | 9 | `std/text/builder` | ✅ `builder` value plus a `build { emit(..) }` effect |
 | 10 | `std/text/format` | ✅ `format("{} {:>8} {0:*^9}", args)` |
 | 11 | `std/text/encoding` | ✅ base64 (standard and URL-safe), hex, percent-encoding. UTF-8 was already in `core/bytes` |
-| 12–13 | `std/os/fs` | ✅ Binary read/write/append, `read-lines`, `file-info`, `path-exists`, `remove-file`, `rename`, `set-permissions`, `create-dir`, `remove-dir(-all)`, `set-cwd`, temp files and directories, `glob`, lazy `walk` (sorted, depth first, with `prune`, `max-depth` and `follow-symlinks`) |
-| 14 | `std/os/io` | ✅ `eprint(ln)`, `flush`, `read-stdin(-lines)`, `*-is-tty`, `exit` |
+| 12–13 | `std/os/fs` | ✅ Binary read/write/append, `read-lines`, `file-info`, `path-exists`, `remove-file`, `rename`, `set-permissions`, `create-dir`, `remove-dir(-all)`, `set-cwd`, temp files and directories, `glob`, lazy `walk` (sorted, depth first, with `prune`, `max-depth` and `follow-symlinks`), file handles (`open-file`, `with-file` with `Read`/`Write`/`Append`, `read`, `write`, `close` (idempotent; a forgotten handle is closed by its finalizer on C), `stream`), `write-stream`, `append-stream` |
+| 14 | `std/os/io` | ✅ `eprint(ln)`, `flush`, `read-stdin(-lines)`, `stdin-stream` and `read-stdin-chunk` (incremental, as input arrives), `write-stdout`/`write-stderr` (bytes), `*-is-tty`, `exit` |
 | 15 | `std/os/process` | ✅ `run`, `run-bytes`, `run-output` (argv, stdin, cwd, env; captures exit code, stdout and stderr) |
 | 15b | `std/async/os/process` | ✅ Asynchronous child processes: `spawn` with piped, inherited or ignored stdio, `write-stdin`, `close-stdin`, `read-stdout`/`read-stderr`, `wait`, `kill`, `pid`; `run-process(-bytes,-output)` capture output without blocking other strands, and a cancelled run (e.g. by `timeout`) kills the child |
 | 16 | `std/os/env` | ✅ `set-env`, `unset-env` · ❌ signals |
@@ -348,7 +348,8 @@ backends and diffs the output against its `.out` file.
 | 23b | `std/async/os/udp` | ✅ UDP on libuv (C) and `dgram` (JS): `udp-bind`, `send-to` (IP or host name), `receive-from` with the sender address, `set-broadcast`, `local-address`; cancellable · ❌ multicast, connected UDP sockets |
 | 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle, `SSL_CERT_FILE`, or an explicit `ca`); TLS server: `tls-server-config` (PEM certificate chain and key) and `tls-accept` on accepted connections; client certificates (`cert`/`key` on the client, `client-ca` and `client-cert-required` on the server, `peer-certificate`); ALPN (`alpn`, `alpn-protocol`); mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections · ❌ SNI-based certificate selection, certificate revocation |
 | 25 | `std/async/os/http` | ✅ HTTP/1.1 and HTTP/2 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA and a client certificate (`tls-ca`, `tls-cert`, `tls-key`); `http-client` reuses keep-alive connections (per-host idle pool with an idle timeout that also respects the server's `Keep-Alive: timeout`, idempotent requests retried once on a stale connection); the server reports the client address (`peer`) and certificate (`client-cert`) and honours `Connection: close` from a handler, and closes connections that stay idle (`idle-timeout`, announced in `Keep-Alive`) or send a request too slowly (`request-timeout`, answered with 408); HTTP/2 (`std/async/os/http2`) with ALPN on `https` and with prior knowledge (`h2c`) on `http`: multiplexing, flow control, `version` on requests and responses; the client shares one connection per origin (also between concurrent first requests) and retries requests refused by a closing server; interoperates with curl/nghttp2, Node.js, Google, Cloudflare and GitHub · ❌ server push, the `Upgrade: h2c` mechanism, HTTP/3 |
-| 26–27 | streams, sync | ❌ |
+| 26 | `std/io/stream` | ✅ `byte-stream<e>`: a lazy `seq<e,bytes>` of chunks, pull-based and pure Koka (no mutable state). Sources `bytes/stream`, `string/stream`, `from-reader`; lazy `lines` (`\n` and `\r\n`), `split-bytes`, `decode-utf8` (characters split over chunks), `encode-utf8`, `unlines`, `rechunk`, `take-bytes`, `drop-bytes`; `read-all`, `read-text`, `byte-count`, `pipe`; incremental `read-line`, `read-until` (with `max-len`), `read-bytes`, which return the rest of the stream. Connected to sync file handles (`std/os/fs`), stdin (`std/os/io`), TCP sockets, TLS connections, child process output and async files. Constant memory: 300 MB of lines in 1.7 s with 3.4 MB resident · ❌ compression transformers (#21), write buffering beyond `rechunk`; `std/async/os/http` keeps its own reader |
+| 27 | sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ❌ |
 | 30 | `std/data/uuid` | ✅ v4 and v7, parse and show |
@@ -468,3 +469,12 @@ backends and diffs the output against its `.out` file.
 * **Fixity declarations go at the top of a module,** before any other
   declaration; defining a new `(++)` without `pub infixr 60 (++)` makes chains
   of `++` ambiguous.
+* **`std/core` already has a type `stream<a>`** (an unused co-inductive
+  infinite list), so a new `stream` type is ambiguous everywhere; the byte
+  stream alias is `byte-stream<e>`.
+* **An effect can't be added on top of a data type's effect.** A function that
+  takes `seq<e,a>` and throws can't be `<exn,div|e>`: forcing the sequence
+  only gives `<div|e>`, and the two don't unify. Ask for the effect in the type
+  instead (`seq<<exn|e>,a>`).
+* **A local `val` shadows functions of the same name for dot calls.**
+  `val (lines, code) = ...` makes a later `s.lines` refer to the tuple.

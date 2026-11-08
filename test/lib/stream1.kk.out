@@ -1,0 +1,35 @@
+1: ["hello","w\xF6rld","","last"] "hello\nw\xF6rld\r\n\nlast"
+2: ["hello","w\xF6rld","","last"] "hello\nw\xF6rld\r\n\nlast"
+3: ["hello","w\xF6rld","","last"] "hello\nw\xF6rld\r\n\nlast"
+4: ["hello","w\xF6rld","","last"] "hello\nw\xF6rld\r\n\nlast"
+["a","b"]
+[]
+[""]
+["x","y","","z"]
+["\u20ACu","r","o"]
+"ab\ncd\n"
+abcd
+[3,3,3,1]
+["0123","4567","89"]
+10
+["012","345","678","9"]
+01234 56789
+"" ""
+["GET / HTTP/1.1","Host: x","","BODY12345","tail"]
+no newline / ""
+Nothing
+key -> value
+Nothing
+True
+abc
+["one","two","three"]
+["line 1","line 2","line 3"]
+["line 1"]
+"ine 2\nline 3"
+0
+588895
+5000150001
+["99999","100000","100001"]
+line
+True
+True

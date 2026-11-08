@@ -21,6 +21,8 @@
 */
 module std/os/io
 
+pub import std/io/stream
+
 extern import
   c  file "io-inline.c"
   js file "io-inline.js"
@@ -52,6 +54,35 @@ pub fun read-stdin-lines() : <console,exn> list<string>
       Just2(init, "") -> init
       _ -> lines
 
+// Standard input as a stream, read in chunks of at most `chunk-size` bytes
+// as the input arrives. The stream is consumed as it is read (see `std/io/stream`).
+//
+// ```
+// stdin-stream().lines.foreach fn(line)
+//   println(line.to-upper)
+// ```
+pub fun stdin-stream( chunk-size : int = 65536 ) : byte-stream<<console,exn|e>>
+  from-reader(fn() read-stdin-chunk(chunk-size))
+
+// Read the next chunk of at most `max` bytes from standard input, as soon as
+// some input is available. Returns empty bytes at the end of the input.
+pub fun read-stdin-chunk( max : int = 65536 ) : <console,exn> bytes
+  match prim-read-stdin-chunk(max)
+    Error(exn) -> throw-exn(exn.prepend("unable to read standard input"))
+    Ok(b) -> b
+
+// Write bytes to standard output (after the text printed so far).
+pub fun write-stdout( content : bytes ) : <console,exn> ()
+  match prim-write-std(1, content)
+    Error(exn) -> throw-exn(exn.prepend("unable to write to standard output"))
+    _ -> ()
+
+// Write bytes to standard error.
+pub fun write-stderr( content : bytes ) : <console,exn> ()
+  match prim-write-std(2, content)
+    Error(exn) -> throw-exn(exn.prepend("unable to write to standard error"))
+    _ -> ()
+
 // Is standard input connected to a terminal?
 pub fun stdin-is-tty() : console bool
   prim-is-tty(0)
@@ -80,6 +111,14 @@ extern prim-flush() : console ()
 extern prim-read-stdin() : console error<string>
   c  "kk_os_read_stdin"
   js "_read_stdin"
+
+extern prim-read-stdin-chunk( max : int ) : console error<bytes>
+  c  "kk_os_read_stdin_chunk"
+  js "_read_stdin_chunk"
+
+extern prim-write-std( fd : int, content : bytes ) : console error<()>
+  c  "kk_os_write_std"
+  js "_write_std"
 
 extern prim-is-tty( fd : int ) : console bool
   c  "kk_os_is_tty"
