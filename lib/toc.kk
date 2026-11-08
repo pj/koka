@@ -30,6 +30,7 @@ pub import std/os/task
 pub import std/os/fs
 pub import std/os/io
 pub import std/io/stream
+pub import std/compress
 
 pub import std/text/parse
 pub import std/text/regex

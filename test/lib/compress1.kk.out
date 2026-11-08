@@ -1,0 +1,27 @@
+(True,True)
+(True,True)
+(True,True)
+True
+True
+True
+True
+0
+(31,139)
+120
+first second
+True
+decompress: unexpected end of the compressed data
+True
+0x414FA339
+0x414FA339
+0x11E60398
+0x11E60398
+True
+(1,20000,["line 19999","line 20000"])
+(7,20000,["line 19999","line 20000"])
+(4096,20000,["line 19999","line 20000"])
+True
+decompress: unexpected end of the compressed data
+208894
+0
+"made by gzip\n"

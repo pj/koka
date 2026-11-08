@@ -342,7 +342,7 @@ backends and diffs the output against its `.out` file.
 | 18 | `std/test` | ✅ `run-tests`, `group`, `test`, `expect*`, `check-property` with generators |
 | 19 | `std/log` | ✅ `log` effect; stderr text/JSON, collect and ignore handlers; `with-log-fields` |
 | 20 | `std/crypto/hash` | ✅ SHA-256, SHA-1, HMAC, constant-time compare · ❌ BLAKE2/3 |
-| 21 | `std/compress` | ❌ |
+| 21 | `std/compress` | ✅ zlib on C, Node `zlib` on JS: `compress`/`decompress` for raw deflate, zlib and gzip (`Auto` detects gzip or zlib on decompression), `gzip`/`gunzip`/`deflate`/`inflate`, levels 0–9; the same on byte streams (`s.gunzip.lines`), incrementally on C (on JS the stream functions collect the input first, since Node has no synchronous incremental zlib); multi-member gzip; `crc32` and `adler32` with incremental `init`; interoperates with the `gzip` tool · ❌ zip archives, brotli, zstd |
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
 | 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable |
 | 23b | `std/async/os/udp` | ✅ UDP on libuv (C) and `dgram` (JS): `udp-bind`, `send-to` (IP or host name), `receive-from` with the sender address, `set-broadcast`, `local-address`; cancellable · ❌ multicast, connected UDP sockets |
@@ -476,5 +476,13 @@ backends and diffs the output against its `.out` file.
   takes `seq<e,a>` and throws can't be `<exn,div|e>`: forcing the sequence
   only gives `<div|e>`, and the two don't unify. Ask for the effect in the type
   instead (`seq<<exn|e>,a>`).
+* **`unsafe-total` around a call that needs a handler crashes at run time.**
+  Wrapping an `exn`-typed extern in `unsafe-total` compiles, but the call then
+  looks for exception evidence that isn't there (a segfault on C, "reading
+  'hnd'" on JS). Type stateful externs as `ndet`, which needs no handler, and
+  hide it with `unsafe-total` or `pretend-no-ndet`.
+* **A C library found only as a `.dylib` needs `syslib`.** `library="z"` looks
+  for a static library to copy into the build and fails for nix's zlib;
+  `syslib="z"` just links `-lz`.
 * **A local `val` shadows functions of the same name for dot calls.**
   `val (lines, code) = ...` makes a later `s.lines` refer to the tuple.
