@@ -66,6 +66,8 @@ pub import std/num/float64
 pub import std/num/decimal
 pub import std/num/ddouble
 pub import std/num/random
+pub import std/num/rational
+pub import std/num/complex
 
 pub import std/time
 pub import std/time/timestamp
