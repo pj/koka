@@ -1,0 +1,77 @@
+{"title":"TOML Example","owner":{"name":"Tom Preston-Werner","dob":"1979-05-27T07:32:00-08:00"},"database":{"enabled":true,"ports":[8000,8001,8002],"data":[["delta","phi"],[3.14]],"temp_targets":{"cpu":79.5,"case":72.0}},"servers":{"alpha":{"ip":"10.0.0.1","role":"frontend"},"beta":{"ip":"10.0.0.2","role":"backend"}}}
+Just("backend")
+Just(3)
+offset-datetime 1979-05-27T07:32:00-08:00
+["title","owner","database","servers"]
+basic: {"s":"tab\there \"quoted\" é 😀"}
+literal: {"s":"C:\\Users\\nodejs\\templates"}
+multi-line: {"s":"Roses are red\nViolets are blue"}
+line-ending backslash: {"s":"The quick brown fox."}
+quotes in multi-line: {"s":"Here are two quotation marks: \"\". Simple enough.","t":"\"This,\" she said, \"is just a pointless statement.\"","u":"That's still pointless"}
+multi-line literal: {"s":"The first newline is\ntrimmed in raw strings.\n   All other whitespace\n   is preserved.\n"}
+integers: {"a":99,"b":42,"c":0,"d":-17,"e":1000,"f":5349221,"g":3735928559,"h":493,"i":214,"j":9223372036854775807}
+floats: {"a":1.0,"b":3.1415,"c":-0.01,"d":5e+22,"e":1000000.0,"f":-0.02,"g":6.626e-34,"h":224617.445991}
+inf -inf nan nan
+dates: {"a":"1979-05-27T07:32:00Z","b":"1979-05-27T00:32:00.999999-07:00","c":"1979-05-27T07:32:00Z","d":"1979-05-27T07:32:00","e":"1979-05-27","f":"07:32:00","g":"00:32:00.999999","h":"1979-05-27T07:32:00Z"}
+["offset-datetime","local-time","local-date"]
+keys: {"bare_key-1":1,"quoted key":2,"literal key":3,"site":{"google.com":true},"a":{"b":{"c":4}},"3":{"14159":"pi"}}
+dotted and headers: {"fruit":{"apple":{"color":"red","taste":{"sweet":true},"texture":{"smooth":true}}}}
+implicit then explicit: {"x":{"y":{"z":{"w":{"a":1}}},"b":2}}
+array of tables: {"products":[{"name":"Hammer","sku":738594937},{},{"name":"Nail","sku":284758393,"color":"gray"}]}
+nested arrays of tables: {"fruits":[{"name":"apple","physical":{"color":"red"},"varieties":[{"name":"red delicious"},{"name":"granny smith"}]},{"name":"banana","varieties":[{"name":"plantain"}]}]}
+inline tables: {"name":{"first":"Tom","last":"Preston-Werner"},"point":{"x":1,"y":2},"animal":{"type":{"name":"pug"}},"empty":{}}
+arrays: {"a":[1,2,3],"b":["x","y"],"c":[[1,2],["a","b"]],"d":[],"e":[{"x":1},{"x":2}]}
+crlf and comments: {"a":1,"t":{"b":2}}
+duplicate key: error: toml parse error at line 2, column 1: the key "a" is defined twice
+table twice: error: toml parse error at line 3, column 2: the table "fruit" is defined twice
+dotted then header: error: toml parse error at line 3, column 2: the table "fruit.apple" is defined twice
+extend inline: error: toml parse error at line 2, column 2: the key "a" is not a table
+static array: error: toml parse error at line 2, column 3: the key "fruits" is not an array of tables
+leading zero: error: toml parse error at line 1, column 5: leading zeros are not allowed
+double underscore: error: toml parse error at line 1, column 5: invalid number
+bad date: error: toml parse error at line 1, column 13: invalid day
+bad escape: error: toml parse error at line 1, column 7: invalid escape
+newline in string: error: toml parse error at line 1, column 9: newline in a string
+no value: error: toml parse error at line 1, column 5: invalid number
+two on a line: error: toml parse error at line 1, column 7: expected the end of the line
+unterminated: error: toml parse error at line 1, column 10: expected ',' or ']' in an array
+signed hex: error: toml parse error at line 1, column 5: a sign is not allowed on hexadecimal, octal or binary numbers
+title = "TOML Example"
+
+[owner]
+name = "Tom Preston-Werner"
+dob = 1979-05-27T07:32:00-08:00
+
+[database]
+enabled = true
+ports = [8000, 8001, 8002]
+data = [["delta", "phi"], [3.14]]
+
+[database.temp_targets]
+cpu = 79.5
+case = 72.0
+
+[servers.alpha]
+ip = "10.0.0.1"
+role = "frontend"
+
+[servers.beta]
+ip = "10.0.0.2"
+role = "backend"
+
+True
+"a b" = "line\n\"q\"\t\u0001"
+
+[t]
+x = inf
+y = 1.0
+
+[[arr]]
+k = 1
+
+[[arr]]
+
+[nested.deep]
+v = false
+
+True

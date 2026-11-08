@@ -351,7 +351,7 @@ backends and diffs the output against its `.out` file.
 | 26 | `std/io/stream` | ✅ `byte-stream<e>`: a lazy `seq<e,bytes>` of chunks, pull-based and pure Koka (no mutable state). Sources `bytes/stream`, `string/stream`, `from-reader`; lazy `lines` (`\n` and `\r\n`), `split-bytes`, `decode-utf8` (characters split over chunks), `encode-utf8`, `unlines`, `rechunk`, `take-bytes`, `drop-bytes`; `read-all`, `read-text`, `byte-count`, `pipe`; incremental `read-line`, `read-until` (with `max-len`), `read-bytes`, which return the rest of the stream. Connected to sync file handles (`std/os/fs`), stdin (`std/os/io`), TCP sockets, TLS connections, child process output and async files. Constant memory: 300 MB of lines in 1.7 s with 3.4 MB resident · ❌ compression transformers (#21), write buffering beyond `rechunk`; `std/async/os/http` keeps its own reader |
 | 27 | sync | ❌ |
 | 28 | `std/data/csv` | ✅ |
-| 29 | `std/data/toml` | ❌ |
+| 29 | `std/data/toml` | ✅ TOML 1.0 `parse-toml` with line/column errors: all string forms (basic, literal, multi-line with line-ending backslash and extra quotes), integers (hex/octal/binary, underscores, arbitrary precision), floats (`inf`, `nan`), the four date/time kinds (validated, kept as RFC 3339 text), arrays, inline tables, dotted keys, `[tables]` and `[[arrays of tables]]` with the redefinition rules; accessors (`at`, `path`, `as-*`), `==`, `stringify` that parses back to the same document, conversion to JSON |
 | 30 | `std/data/uuid` | ✅ v4 and v7, parse and show |
 | 31–36 | rational/complex, bitset, pretty, unicode fixes, sqlite, xml | ❌ |
 

@@ -50,6 +50,7 @@ pub import std/data/dict
 pub import std/data/deque
 pub import std/data/heap
 pub import std/data/json
+pub import std/data/toml
 pub import std/data/csv
 pub import std/data/uuid
 
