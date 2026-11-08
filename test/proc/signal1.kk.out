@@ -1,0 +1,6 @@
+(2,15,True)
+SIGUSR2
+SIGINT
+(SIGUSR1,0)
+True
+("up","stopped on SIGTERM")

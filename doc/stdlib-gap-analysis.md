@@ -337,7 +337,7 @@ backends and diffs the output against its `.out` file.
 | 14 | `std/os/io` | ✅ `eprint(ln)`, `flush`, `read-stdin(-lines)`, `stdin-stream` and `read-stdin-chunk` (incremental, as input arrives), `write-stdout`/`write-stderr` (bytes), `*-is-tty`, `exit` |
 | 15 | `std/os/process` | ✅ `run`, `run-bytes`, `run-output` (argv, stdin, cwd, env; captures exit code, stdout and stderr) |
 | 15b | `std/async/os/process` | ✅ Asynchronous child processes: `spawn` with piped, inherited or ignored stdio, `write-stdin`, `close-stdin`, `read-stdout`/`read-stderr`, `wait`, `kill`, `pid`; `run-process(-bytes,-output)` capture output without blocking other strands, and a cancelled run (e.g. by `timeout`) kills the child |
-| 16 | `std/os/env` | ✅ `set-env`, `unset-env` · ❌ signals |
+| 16 | `std/os/env` | ✅ `set-env`, `unset-env`; signals in `std/async/os/signal`: `wait-signal([SIGINT, SIGTERM])` (for graceful shutdown with `firstof`), `raise-signal`, `number`, on libuv (C) and Node `process` events (JS); cancellable · ❌ persistent handlers (the default action applies between two `wait-signal` calls), signals on Windows beyond `SIGINT`/`SIGTERM`/`SIGBREAK` |
 | 17 | `std/data/json` | ✅ Parse (with line/column errors), compact and pretty output, accessors, `?json` encoding |
 | 18 | `std/test` | ✅ `run-tests`, `group`, `test`, `expect*`, `check-property` with generators |
 | 19 | `std/log` | ✅ `log` effect; stderr text/JSON, collect and ignore handlers; `with-log-fields` |
