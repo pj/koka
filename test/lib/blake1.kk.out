@@ -1,0 +1,39 @@
+blake2b empty: ok
+blake2s empty: ok
+blake2b keyed empty: ok
+blake2s keyed empty: ok
+blake2b abc: ok
+blake2s abc: ok
+blake2b keyed abc: ok
+blake2s keyed abc: ok
+blake2b pat 1000: ok
+blake2s pat 1000: ok
+blake2b keyed pat 1000: ok
+blake2s keyed pat 1000: ok
+blake2b pat 5000: ok
+blake2s pat 5000: ok
+blake2b keyed pat 5000: ok
+blake2s keyed pat 5000: ok
+blake2b pat 100003: ok
+blake2s pat 100003: ok
+blake2b keyed pat 100003: ok
+blake2s keyed pat 100003: ok
+blake2b keyed exact block: ok
+blake2s exact block: ok
+blake3 empty: ok
+blake3 abc: ok
+blake3 pat 1000: ok
+blake3 pat 1024: ok
+blake3 pat 1025: ok
+blake3 pat 2048: ok
+blake3 pat 3072: ok
+blake3 pat 5000: ok
+blake3 pat 100003: ok
+blake3 100 bytes: ok
+blake3 keyed empty: ok
+blake3 keyed abc: ok
+blake3 keyed pat 5000: ok
+blake3 derive: ok
+blake3 derive 40: ok
+True
+(1,64,0)

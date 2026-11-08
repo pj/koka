@@ -341,7 +341,7 @@ backends and diffs the output against its `.out` file.
 | 17 | `std/data/json` | ✅ Parse (with line/column errors), compact and pretty output, accessors, `?json` encoding |
 | 18 | `std/test` | ✅ `run-tests`, `group`, `test`, `expect*`, `check-property` with generators |
 | 19 | `std/log` | ✅ `log` effect; stderr text/JSON, collect and ignore handlers; `with-log-fields` |
-| 20 | `std/crypto/hash` | ✅ SHA-256, SHA-1, HMAC, constant-time compare · ❌ BLAKE2/3 |
+| 20 | `std/crypto/hash` | ✅ SHA-256, SHA-1, HMAC, constant-time compare; BLAKE2b and BLAKE2s (RFC 7693, keyed, any output size) and BLAKE3 (any output length, keyed, key derivation), in C and JS, checked against Python `hashlib` and `b3sum` |
 | 21 | `std/compress` | ✅ zlib on C, Node `zlib` on JS: `compress`/`decompress` for raw deflate, zlib and gzip (`Auto` detects gzip or zlib on decompression), `gzip`/`gunzip`/`deflate`/`inflate`, levels 0–9; the same on byte streams (`s.gunzip.lines`), incrementally on C (on JS the stream functions collect the input first, since Node has no synchronous incremental zlib); multi-member gzip; `crc32` and `adler32` with incremental `init`; interoperates with the `gzip` tool · ❌ zip archives, brotli, zstd |
 | 22 | `std/net/url` | ✅ Parse and show, query parameters, RFC 3986 `resolve` |
 | 23 | `std/async/os/net` | ✅ TCP on libuv (C) and Node (JS): `resolve-host`, `tcp-connect`, `read`, `read-all`, `write-all`, `shutdown-write`, `tcp-listen`, `accept`, `serve`, addresses, `set-nodelay`; cancellable |
@@ -449,7 +449,7 @@ backends and diffs the output against its `.out` file.
 * **`mask<exn>{ ... }` widens an effect row.** Wrapping a `catch` in it gives
   the result an extra `exn`, so it can sit next to code that may throw (for
   example both branches of `interleaved`).
-* **More reserved words:** `handle`, `handler` and `raw` are keywords.
+* **More reserved words:** `handle`, `handler`, `raw` and `context` are keywords.
 * **Scoped `with x = f()` covers the rest of the block,** so a resource opened
   that way stays open until the block ends.
 * **Effect rows inside data types are invariant.** A `seq<<div>,int>` forced in
