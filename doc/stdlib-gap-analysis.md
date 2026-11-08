@@ -355,7 +355,8 @@ backends and diffs the output against its `.out` file.
 | 30 | `std/data/uuid` | ✅ v4 and v7, parse and show |
 | 31 | `std/num/rational`, `std/num/complex` | ✅ Rationals over `int` in lowest terms: arithmetic (`x/0` is 0, as for `int`), `^` with negative powers, comparisons, `floor`/`ceiling`/`truncate`/`round` (half to even), exact conversion from `float64` and nearest conversion back, `show-decimal`, `parse-rational` (`n/d` and decimals). Complex `float64`: arithmetic (Smith's division), `abs`, `arg`, `conj`, `polar`, `exp`, `ln`, `sqrt` (principal, signed zeros), `pow`, integer `^`, `sin`/`cos`/`tan`, `show` |
 | 32 | `std/data/bitset` | ✅ Persistent dense bitset in 64-bit words: `bitset(list)` (linear after sorting), `range-bitset`, `member`, `insert`/`remove` (copying), `+` (union), `-`, `intersection`, `sym-difference`, `complement`, `is-subset`/`is-disjoint`, `count` (popcount), `minimum`/`maximum`/`next-member` (ctz/clz), `list`, `seq`, `foldl`, `filter`, `==`, `show` |
-| 33–36 | pretty, unicode fixes, sqlite, xml | ❌ |
+| 33 | `std/text/pretty` | ✅ Wadler/Leijen pretty printer (strict renderer): `text`, `line`, `linebreak`, `softline`, `hardline`, `++`, `<+>`, `<->`, `group`, `nest`, `align`, `hang`, `indent`, `column`, `nesting`, `fill`, `fill-break`, `hsep`/`vsep`/`sep`, `hcat`/`vcat`/`cat`, `fill-sep`/`fill-cat`, `punctuate`, `enclose-sep`, `list-doc`, `tupled`, `semi-braces`, `block`, `parens` etc., `pretty(width)` |
+| 34–36 | unicode fixes, sqlite, xml | ❌ |
 
 ### Platform limitations
 

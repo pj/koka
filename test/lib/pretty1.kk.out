@@ -1,0 +1,100 @@
+-- width 80
+frobnicate(alpha, beta, inner(gamma, delta))
+-- width 30
+frobnicate(alpha
+          , beta
+          , inner(gamma
+                 , delta))
+-- width 20
+frobnicate(alpha
+          , beta
+          , inner(gamma
+                 , delta))
+-- width 60
+while (x > 0) { x = x - 1; print(x); }
+-- width 20
+while (x > 0) {
+  x = x - 1;
+  print(x);
+}
+-- width 100
+{ "name": "koka", "tags": [ "fun", "effects", "fbip" ], "version": 3, "deps": { "std": "*" } }
+-- width 40
+{
+  "name": "koka",
+  "tags": [ "fun", "effects", "fbip" ],
+  "version": 3,
+  "deps": { "std": "*" }
+}
+-- width 10
+{
+  "name": "koka",
+  "tags": [
+    "fun",
+    "effects",
+    "fbip"
+  ],
+  "version": 3,
+  "deps": {
+    "std": "*"
+  }
+}
+the quick brown fox
+jumps over the lazy
+dog and keeps on
+running
+--
+let x = first
+        second
+item: the quick brown
+        fox jumps over
+        the lazy dog and
+        keeps on running
+    a
+    b
+name   : string
+age    : int
+verylongname : bool
+--
+name   string
+age    int
+verylongname
+       bool
+--
+a
+b
+c
+one
+  two|
+[] (1) {x; y} p q
+ab a b ab
+[1
+, 2
+, 3
+, 4
+, 5
+, 6
+, 7
+, 8
+, 9
+, 10
+, 11
+, 12
+, 13
+, 14
+, 15
+, 16
+, 17
+, 18
+, 19
+, 20
+, 21
+, 22
+, 23
+, 24
+, 25
+, 26
+, 27
+, 28
+, 29
+, 30]

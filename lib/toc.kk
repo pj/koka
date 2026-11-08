@@ -38,6 +38,7 @@ pub import std/text/unicode
 pub import std/text/builder
 pub import std/text/encoding
 pub import std/text/format
+pub import std/text/pretty
 
 pub import std/data/map
 pub import std/data/set
