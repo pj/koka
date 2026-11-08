@@ -354,7 +354,8 @@ backends and diffs the output against its `.out` file.
 | 29 | `std/data/toml` | ✅ TOML 1.0 `parse-toml` with line/column errors: all string forms (basic, literal, multi-line with line-ending backslash and extra quotes), integers (hex/octal/binary, underscores, arbitrary precision), floats (`inf`, `nan`), the four date/time kinds (validated, kept as RFC 3339 text), arrays, inline tables, dotted keys, `[tables]` and `[[arrays of tables]]` with the redefinition rules; accessors (`at`, `path`, `as-*`), `==`, `stringify` that parses back to the same document, conversion to JSON |
 | 30 | `std/data/uuid` | ✅ v4 and v7, parse and show |
 | 31 | `std/num/rational`, `std/num/complex` | ✅ Rationals over `int` in lowest terms: arithmetic (`x/0` is 0, as for `int`), `^` with negative powers, comparisons, `floor`/`ceiling`/`truncate`/`round` (half to even), exact conversion from `float64` and nearest conversion back, `show-decimal`, `parse-rational` (`n/d` and decimals). Complex `float64`: arithmetic (Smith's division), `abs`, `arg`, `conj`, `polar`, `exp`, `ln`, `sqrt` (principal, signed zeros), `pow`, integer `^`, `sin`/`cos`/`tan`, `show` |
-| 32–36 | bitset, pretty, unicode fixes, sqlite, xml | ❌ |
+| 32 | `std/data/bitset` | ✅ Persistent dense bitset in 64-bit words: `bitset(list)` (linear after sorting), `range-bitset`, `member`, `insert`/`remove` (copying), `+` (union), `-`, `intersection`, `sym-difference`, `complement`, `is-subset`/`is-disjoint`, `count` (popcount), `minimum`/`maximum`/`next-member` (ctz/clz), `list`, `seq`, `foldl`, `filter`, `==`, `show` |
+| 33–36 | pretty, unicode fixes, sqlite, xml | ❌ |
 
 ### Platform limitations
 
@@ -450,7 +451,7 @@ backends and diffs the output against its `.out` file.
 * **`mask<exn>{ ... }` widens an effect row.** Wrapping a `catch` in it gives
   the result an extra `exn`, so it can sit next to code that may throw (for
   example both branches of `interleaved`).
-* **More reserved words:** `handle`, `handler`, `raw` and `context` are keywords.
+* **More reserved words:** `handle`, `handler`, `raw`, `context` and `mask` are keywords, and `|` cannot be defined as an operator.
 * **Scoped `with x = f()` covers the rest of the block,** so a resource opened
   that way stays open until the block ends.
 * **Effect rows inside data types are invariant.** A `seq<<div>,int>` forced in
