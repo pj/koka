@@ -275,14 +275,13 @@ struct kk_evv_s {
   // kk_integer_t cfc;
 };
 
+// The empty evidence vector is shared by all threads, so it is a static
+// block with a stuck reference count: a heap block with a plain count was
+// dup'ed and dropped by every thread that installs a handler, which raced
+// (and its lazy allocation raced too), corrupting memory when effect
+// handlers ran in parallel tasks.
 kk_datatype_ptr_t kk_evv_empty_singleton(kk_context_t* ctx) {
-  static struct kk_evv_s* evv = NULL;
-  if (evv == NULL) {
-    evv = kk_block_alloc_as(struct kk_evv_s, 0, KK_TAG_EVV_VECTOR, ctx);
-    // evv->cfc = kk_integer_from_small(-1);
-  }
-  kk_base_type_dup_as(struct kk_evv_s*, evv);
-  return kk_datatype_from_base(evv, ctx);
+  return kk_datatype_from_base(&kk_evv_empty_static, ctx);
 }
 
 

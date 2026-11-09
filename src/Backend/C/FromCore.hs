@@ -402,6 +402,12 @@ genTopDefDecl genSig inlineC def@(Def name tp defBody vis sort inl rng comm)
                                 emitToH (text "#define" <+> ppName name <+> parens (text "(double)" <.> parens flt))
                         _ -> do doc <- genStat (ResultAssign (TName name tp) Nothing) (defBody)
                                 emitToInit (block doc)  -- must be scoped to avoid name clashes
+                                -- top-level values are used by every thread (e.g. in `std/os/task`),
+                                -- so mark them as thread shared (making their reference counts atomic)
+                                when (needsSharedMark tp) $
+                                  emitToInit (block (text "kk_box_t _shared = " <.> genBoxCall tp (genDupCall tp (ppName name)) <.> semi
+                                                     <-> text "kk_box_mark_shared(_shared, kk_context());"
+                                                     <-> text "kk_box_drop(_shared, kk_context());"))
                                 case genDupDropCall False {-drop-} tp (ppName name) of
                                   []   -> return ()
                                   docs -> emitToDone (hcat docs <.> semi)
@@ -439,6 +445,16 @@ genTopDefDecl genSig inlineC def@(Def name tp defBody vis sort inl rng comm)
                           else debugComment ("genFunDef: no tail calls to " ++ show name ++ " found")
                             <.> tblock tpDoc bodyDoc
                       )
+
+-- Does a top-level value of this type refer to the heap (so it must be marked thread shared)?
+needsSharedMark :: Type -> Bool
+needsSharedMark tp
+  = case cType tp of
+      CFun _ _ -> True
+      CBox     -> True
+      CData _  -> True
+      CPrim val -> val `elem` ["kk_integer_t","kk_bytes_t","kk_string_t","kk_vector_t","kk_ref_t","kk_box_t"]
+      _        -> False
 
 unitSemi :: Type -> Doc
 unitSemi tp

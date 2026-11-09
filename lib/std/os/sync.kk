@@ -26,9 +26,8 @@
 
    `spawn` runs a function on the thread pool of `std/os/task`. The function
    may use the effects that need no handler (`ndet`, `console` and `div`), so
-   it can use the primitives here, but not exceptions or other effects
-   handled by the caller. (Effect handlers inside spawned work, including
-   `try`, are not safe in the current runtime: they can corrupt memory.) Values that are stored in or sent through these
+   it can use the primitives here, and it can handle its own exceptions and
+   other effects, but not raise them to the caller. Values that are stored in or sent through these
    primitives are marked as shared between threads.
 
    All operations have the `ndet` effect, since their results depend on how
@@ -132,14 +131,11 @@ abstract struct mutex( hnd : any )
 pub fun mutex() : ndet mutex
   Mutex(prim-mutex-new())
 
-// Run `action` while holding the lock. The action cannot raise exceptions,
-// so the lock is always released afterwards. (This uses no effect handler:
-// handlers inside spawned work are not safe in the current runtime.)
-pub fun with-lock( m : mutex, action : () -> <ndet,console,div> a ) : <ndet,console,div> a
+// Run `action` while holding the lock (it is released afterwards, also on an exception).
+pub fun with-lock( m : mutex, action : () -> <ndet|e> a ) : <ndet|e> a
   prim-mutex-lock(m.hnd)
-  val x = action()
-  prim-mutex-unlock(m.hnd)
-  x
+  with finally { prim-mutex-unlock(m.hnd) }
+  action()
 
 // ----------------------------------------------------------------------------
 // Channels

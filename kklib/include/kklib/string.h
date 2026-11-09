@@ -131,8 +131,9 @@ static inline kk_string_t kk_string_empty() {
   static const char* _static_##name = chars; \
   decl kk_string_t name = { { kk_datatype_null_init } };
 
+// (literals are used by every thread, so they are marked as thread shared)
 #define kk_init_string_literal(name,ctx) \
-  if (kk_datatype_is_null(name.bytes)) { name = kk_string_alloc_from_utf8n(_static_len_##name, _static_##name, ctx); }
+  if (kk_datatype_is_null(name.bytes)) { name = kk_string_alloc_from_utf8n(_static_len_##name, _static_##name, ctx); kk_box_mark_shared(kk_string_box(name),ctx); }
 
 #define kk_define_string_literal(decl,name,len,chars,ctx) \
   kk_declare_string_literal(decl,name,len,chars); \
