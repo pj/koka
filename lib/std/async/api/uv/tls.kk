@@ -55,7 +55,7 @@ pub extern tls-close-notify( t : any ) : ioc ()
   js "kk_tls_close_notify"
 
 // A server configuration (C: shared mbedtls configuration; Node.js: a secure context).
-pub extern tls-server-config-new( cert : string, key : string, client-ca : string, client-cert-required : bool, alpn : string ) : ioc any
+pub extern tls-server-config-new( cert : string, key : string, client-ca : string, client-cert-required : bool, alpn : string, sni : string ) : ioc any
   c  "kk_tls_server_config_new"
   js "kk_tls_server_config_new"
 

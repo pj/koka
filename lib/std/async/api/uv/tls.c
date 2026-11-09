@@ -12,6 +12,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>
@@ -24,11 +25,17 @@
 // engines of all connections accepted with it.
 #define KK_TLS_MAX_ALPN 8
 
+#define KK_TLS_MAX_SNI 64
+
 typedef struct kk_tls_conf_s {
   mbedtls_ssl_config       conf;
   mbedtls_x509_crt         cert;
   mbedtls_pk_context       key;
   mbedtls_x509_crt         client_ca;   // to verify client certificates
+  int                      sni_count;   // certificates selected by the server name (SNI)
+  char*                    sni_names[KK_TLS_MAX_SNI];
+  mbedtls_x509_crt         sni_cert[KK_TLS_MAX_SNI];
+  mbedtls_pk_context       sni_key[KK_TLS_MAX_SNI];
   char*        alpn_buf;                // ALPN protocol names (NUL separated)
   const char*  alpn[KK_TLS_MAX_ALPN+1];
   mbedtls_entropy_context  entropy;
@@ -246,10 +253,70 @@ static void kk_tls_conf_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
   mbedtls_x509_crt_free(&c->cert);
   mbedtls_x509_crt_free(&c->client_ca);
   mbedtls_pk_free(&c->key);
+  for (int i = 0; i < c->sni_count; i++) {
+    free(c->sni_names[i]);
+    mbedtls_x509_crt_free(&c->sni_cert[i]);
+    mbedtls_pk_free(&c->sni_key[i]);
+  }
   free(c->alpn_buf);
   mbedtls_ctr_drbg_free(&c->drbg);
   mbedtls_entropy_free(&c->entropy);
   free(c);
+}
+
+// Does a server name match a host pattern (a name, or `*.domain` for one label)?
+static bool kk_tls_name_matches( const char* pat, const unsigned char* name, size_t len ) {
+  if (pat[0] == '*' && pat[1] == '.') {
+    const char* suffix = pat + 1;   // ".domain"
+    const size_t slen = strlen(suffix);
+    const unsigned char* dot = (const unsigned char*)memchr(name, '.', len);
+    if (dot == NULL || dot == name) return false;
+    const size_t rest = len - (size_t)(dot - name);
+    return (rest == slen && strncasecmp((const char*)dot, suffix, slen) == 0);
+  }
+  return (strlen(pat) == len && strncasecmp(pat, (const char*)name, len) == 0);
+}
+
+// Select the certificate for the name the client asked for (or keep the default one).
+static int kk_tls_sni_callback( void* p, mbedtls_ssl_context* ssl, const unsigned char* name, size_t len ) {
+  kk_tls_conf_t* c = (kk_tls_conf_t*)p;
+  for (int i = 0; i < c->sni_count; i++) {
+    if (kk_tls_name_matches(c->sni_names[i], name, len)) {
+      return mbedtls_ssl_set_hs_own_cert(ssl, &c->sni_cert[i], &c->sni_key[i]);
+    }
+  }
+  return 0;
+}
+
+// Add the certificates for server names: `sni` is `name \x01 cert \x01 key` entries separated by `\x01`.
+static int kk_tls_conf_sni( kk_tls_conf_t* c, const char* sni ) {
+  const char* p = sni;
+  while (*p != 0) {
+    const char* fields[3];
+    size_t lens[3];
+    for (int f = 0; f < 3; f++) {
+      const char* end = strchr(p, '\x01');
+      if (end == NULL) end = p + strlen(p);
+      fields[f] = p; lens[f] = (size_t)(end - p);
+      p = (*end == 0 ? end : end + 1);
+    }
+    if (c->sni_count >= KK_TLS_MAX_SNI) { snprintf(c->error, sizeof(c->error), "too many SNI certificates (at most %d)", KK_TLS_MAX_SNI); return -1; }
+    const int i = c->sni_count;
+    mbedtls_x509_crt_init(&c->sni_cert[i]);
+    mbedtls_pk_init(&c->sni_key[i]);
+    c->sni_names[i] = strndup(fields[0], lens[0]);
+    c->sni_count++;
+    char* cert = strndup(fields[1], lens[1]);
+    int ret = mbedtls_x509_crt_parse(&c->sni_cert[i], (const unsigned char*)cert, lens[1] + 1);
+    free(cert);
+    if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid SNI certificate", ret); return ret; }
+    char* key = strndup(fields[2], lens[2]);
+    ret = mbedtls_pk_parse_key(&c->sni_key[i], (const unsigned char*)key, lens[2] + 1, NULL, 0, mbedtls_ctr_drbg_random, &c->drbg);
+    free(key);
+    if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid SNI private key", ret); return ret; }
+  }
+  if (c->sni_count > 0) mbedtls_ssl_conf_sni(&c->conf, &kk_tls_sni_callback, c);
+  return 0;
 }
 
 // Create a server configuration from a PEM certificate chain (the server
@@ -257,7 +324,7 @@ static void kk_tls_conf_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
 // clients are asked for a certificate signed by it; `client_cert_required`
 // rejects clients without one. `alpn` is a comma separated list of protocols
 // in order of preference. Check `kk_tls_server_config_error`.
-kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_t client_ca, bool client_cert_required, kk_string_t alpn, kk_context_t* ctx ) {
+kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_t client_ca, bool client_cert_required, kk_string_t alpn, kk_string_t sni, kk_context_t* ctx ) {
   kk_tls_conf_t* c = (kk_tls_conf_t*)calloc(1, sizeof(kk_tls_conf_t));
   mbedtls_ssl_config_init(&c->conf);
   mbedtls_x509_crt_init(&c->cert);
@@ -294,7 +361,12 @@ kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_
   }
   ret = kk_tls_conf_alpn(&c->conf, alpn, &c->alpn_buf, c->alpn, ctx);
   if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid ALPN protocols", ret); goto done; }
+  kk_with_string_as_qutf8_borrow(sni, csni, ctx) {
+    ret = kk_tls_conf_sni(c, csni);
+  }
+  if (ret != 0) goto done;
 done:
+  kk_string_drop(sni, ctx);
   kk_string_drop(cert, ctx);
   kk_string_drop(key, ctx);
   kk_string_drop(client_ca, ctx);

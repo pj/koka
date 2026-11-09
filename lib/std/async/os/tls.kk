@@ -71,16 +71,20 @@ pub fun is-secure( s : net-stream ) : bool
 //   certificates) and its private key, for servers that ask for one.
 // - `alpn`: application protocols to offer (for example `["h2", "http/1.1"]`);
 //   see `alpn-protocol` for the one the server chose.
+// - `server-name`: the name to ask the server for (SNI) and to check its
+//   certificate against, if it differs from `host` (for example when `host`
+//   is an IP address).
 pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca : string = "",
-                     cert : string = "", key : string = "", alpn : list<string> = [] ) : <async,exn,net> net-stream
+                     cert : string = "", key : string = "", alpn : list<string> = [], server-name : string = "" ) : <async,exn,net> net-stream
   with try-exn-prepend("tls connect to " ++ host ++ ":" ++ port.show)
   val alpns = alpn.join(",")
+  val name = if server-name.is-empty then host else server-name
   if net-has-native-tls() then
-    val h = await("tls-connect", fn(evloop, resume) net-tls-connect-setup(evloop, host, port.int32, verify, ca, cert, key, alpns, resume))
+    val h = await("tls-connect", fn(evloop, resume) net-tls-connect-setup(evloop, host, port.int32, name, verify, ca, cert, key, alpns, resume))
     Net-stream(@unsafe-tcp-socket(h), Nothing, True)
   else
     val sock = tcp-connect(host, port)
-    val t = async-ioc { tls-new(host, verify, ca, cert, key, alpns) }
+    val t = async-ioc { tls-new(name, verify, ca, cert, key, alpns) }
     val err = async-ioc { tls-error(t) }
     if !err.is-empty then
       sock.close
@@ -93,8 +97,8 @@ pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca :
 
 // Connect, run `action` with the stream, and close it afterwards.
 pub fun scoped/tls-connect( host : string, port : int, action : net-stream -> <async,exn,net|e> a, verify : bool = True, ca : string = "",
-                            cert : string = "", key : string = "", alpn : list<string> = [] ) : <async,exn,net|e> a
-  val s = tls-connect(host, port, verify, ca, cert, key, alpn)
+                            cert : string = "", key : string = "", alpn : list<string> = [], server-name : string = "" ) : <async,exn,net|e> a
+  val s = tls-connect(host, port, verify, ca, cert, key, alpn, server-name)
   with finally { s.close }
   action(s)
 
@@ -111,9 +115,13 @@ abstract struct tls-config( hnd : any )
 //   with an invalid one is always rejected.
 // - `alpn`: application protocols the server supports, in order of
 //   preference (for example `["h2", "http/1.1"]`).
+// - `sni`: other certificates, chosen by the server name the client asks for:
+//   `(host, cert-chain, private-key)` where `host` is a name or `*.domain`
+//   (one label). Clients that ask for no name, or another one, get `cert-chain`.
 pub fun tls-server-config( cert-chain : string, private-key : string, client-ca : string = "", client-cert-required : bool = True,
-                           alpn : list<string> = [] ) : <async,exn> tls-config
-  val c = async-ioc { tls-server-config-new(cert-chain, private-key, client-ca, client-cert-required, alpn.join(",")) }
+                           alpn : list<string> = [], sni : list<(string, string, string)> = [] ) : <async,exn> tls-config
+  val snis = sni.map(fn((h, c, k)) [h, c, k].join("\x01")).join("\x01")
+  val c = async-ioc { tls-server-config-new(cert-chain, private-key, client-ca, client-cert-required, alpn.join(","), snis) }
   val err = async-ioc { tls-server-config-error(c) }
   if !err.is-empty then throw("tls server config: " ++ err)
   Tls-config(c)

@@ -738,10 +738,11 @@ kk_std_core_exn__error kk_udp_set_multicast_interface( kk_box_t bu, kk_string_t 
 }
 
 // TLS is implemented in Koka on top of the mbedtls engine for the C backend (see `tls.c`)
-kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, bool verify, kk_string_t ca,
+kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, kk_string_t servername, bool verify, kk_string_t ca,
                                                  kk_string_t cert, kk_string_t key, kk_string_t alpn, kk_function_t cb, kk_context_t* ctx ) {
   kk_unused(loop); kk_unused(port); kk_unused(verify);
   kk_string_drop(host, ctx);
+  kk_string_drop(servername, ctx);
   kk_string_drop(ca, ctx);
   kk_string_drop(cert, ctx);
   kk_string_drop(key, ctx);

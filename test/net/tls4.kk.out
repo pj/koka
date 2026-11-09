@@ -1,0 +1,8 @@
+alpha.test: ok
+ALPHA.test: ok
+www.beta.test: ok
+x.beta.test: ok
+localhost: ok
+beta.test: rejected: certificate
+a.b.beta.test: rejected: certificate
+True
