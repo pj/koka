@@ -17,7 +17,10 @@
    response reads frames for all streams of the connection until its own
    response is complete, and then hands the reading over to another waiting
    request. A server connection has a reader strand and a pool of strands
-   that run the request handlers.
+   that run the request handlers. A request is handed to a handler when its
+   headers arrive, with its body as a stream of the DATA frames; the stream's
+   flow control window is given back as the handler reads the body, so a slow
+   handler slows down the client.
 
    Not supported: server push (disabled with `SETTINGS_ENABLE_PUSH`), stream
    priorities (ignored), and the HTTP/1.1 `Upgrade: h2c` mechanism.
@@ -37,6 +40,16 @@ import std/net/hpack
 
 // A header list: names are lower case; pseudo headers (`:status` etc.) come first.
 pub alias h2-headers = list<(string, string)>
+
+// The body of a response from a server: all at once, or produced in parts by a
+// writer that calls `write` with each part (sent as it is produced).
+pub type h2-body
+  H2-bytes( bytes : bytes )
+  H2-writer( writer : (write : bytes -> <async,exn> ()) -> <async,exn,ndet,div> () )
+
+// A server's request handler: it gets the request headers and the body as a
+// stream, and returns `(status, headers, body)`.
+pub alias h2-handler<e> = (h2-headers, seq<<async,exn,ndet|e>,bytes>) -> <async,exn,ndet|e> (int, list<(string, string)>, h2-body)
 
 // ----------------------------------------------------------------------------
 // Frames
@@ -308,8 +321,6 @@ fun process( c : h2conn, f : frame ) : <async,exn,ndet> ()
     async-ioc
       val st = get-state(c.state)
       match st.find-stream(f.sid)
-        Just(s) | !c.is-client && !s.s-done ->   // a request that was not handed to a worker yet
-          set-state(c, notify-all(st(c-streams = st.c-streams.filter(fn(x) x.s-sid != f.sid))))
         Just(s) ->
           emit-io(s.s-ch, ())
           set-state(c, st.update-stream(f.sid, fn(x) x(s-reset = code)))
@@ -366,20 +377,21 @@ fun on-data( c : h2conn, f : frame ) : <async,exn> ()
   if f.sid == 0 then throw-h2(err-protocol, "DATA on stream 0")
   val data = f.frame-content
   val end-stream = f.flags.has-flag(flag-end-stream)
-  val (known, server-ready) = async-ioc
+  val known = async-ioc
     val st = get-state(c.state)
     match st.find-stream(f.sid)
       Just(s) ->
         emit-io(s.s-ch, ())
         val s1 = s(s-body = if data.is-empty then s.s-body else Cons(data, s.s-body), s-done = s.s-done || end-stream)
         set-state(c, st.update-stream(f.sid, fn(_) s1))
-        (True, !c.is-client && end-stream && s1.s-has-headers)
-      Nothing -> (False, False)
-  if server-ready then c.queue.emit(Just(f.sid))
-  // give the window back right away (bodies are collected in memory anyway)
+        True
+      Nothing -> False
+  // give the connection window back right away; the stream window too on a
+  // client (it collects the body), while a server gives it back as the
+  // handler reads the body (see `request-body`)
   val len = f.payload.length
   if len > 0 then
-    c.send(window-update(0, len) ++ (if known && !end-stream then window-update(f.sid, len) else bytes/empty))
+    c.send(window-update(0, len) ++ (if known && !end-stream && c.is-client then window-update(f.sid, len) else bytes/empty))
 
 fun on-header-fragment( c : h2conn, sid : int, flags : int, fragment : bytes ) : <async,exn,ndet> ()
   if fragment.length > max-header-block then throw-h2(err-protocol, "header block too large")
@@ -417,8 +429,9 @@ fun on-request-headers( c : h2conn, sid : int, hs : h2-headers, end-stream : boo
     Just(_) ->   // trailers
       async-ioc
         val st = get-state(c.state)
-        set-state(c, st.update-stream(sid, fn(s) s(s-done = s.s-done || end-stream)))
-      if end-stream then c.queue.emit(Just(sid))
+        val st1 = st.update-stream(sid, fn(s) s(s-done = s.s-done || end-stream))
+        st.find-stream(sid).foreach(fn(s) emit-io(s.s-ch, ()))
+        set-state(c, st1)
     Nothing ->
       val (last, active, closed) = async-ioc
         val st = get-state(c.state)
@@ -433,7 +446,7 @@ fun on-request-headers( c : h2conn, sid : int, hs : h2-headers, end-stream : boo
           val st = get-state(c.state)
           val s = H2stream(sid, ch, hs, True, [], end-stream, -1, st.c-init-window)
           set-state(c, st(c-last-sid = sid, c-streams = st.c-streams ++ [s]))
-        if end-stream then c.queue.emit(Just(sid))
+        c.queue.emit(Just(sid))
 
 // ----------------------------------------------------------------------------
 // Sending
@@ -468,10 +481,19 @@ fun check-stream( c : h2conn, sid : int ) : <async,exn> h2stream
     Just(x) | x.s-reset >= 0 -> throw("http2: stream reset by the peer (error " ++ x.s-reset.show ++ ")")
     _ -> throw(if err.is-empty then "http2: the stream was closed" else err)
 
+// Client: did the server send a complete response and then reset the stream
+// with `NO_ERROR`? Then it does not need the rest of the request body, which
+// is not sent (RFC 9113 section 8.1).
+fun answered-early( c : h2conn, sid : int ) : async bool
+  c.is-client && async-ioc
+    match get-state(c.state).find-stream(sid)
+      Just(x) -> x.s-reset == err-no-error && x.s-has-headers && x.s-done
+      Nothing -> False
+
 // Send a body as DATA frames, respecting the flow control windows.
 fun send-body( c : h2conn, sid : int, ch : channel<()>, body : bytes, end-stream : bool ) : <async,exn,ndet> ()
   fun go( pos : int ) : <async,exn,ndet> ()
-    if pos >= body.length then ()
+    if pos >= body.length || c.answered-early(sid) then ()
     else
       val s = c.check-stream(sid)
       val n = async-ioc
@@ -598,7 +620,8 @@ fun await-response( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet>
       (st.find-stream(sid), st.c-error)
     match s
       Just(x) | x.s-reset == err-refused-stream -> Nothing
-      Just(x) | x.s-reset >= 0 -> throw("http2: stream reset by the server (error " ++ x.s-reset.show ++ ")")
+      Just(x) | x.s-reset >= 0 && !(x.s-reset == err-no-error && x.s-has-headers && x.s-done) ->
+        throw("http2: stream reset by the server (error " ++ x.s-reset.show ++ ")")
       Just(x) | x.s-has-headers && x.s-done ->
         val status = match x.s-headers.lookup(fn(n) n == ":status").map(fn(t) parse-int(t))
           Just(Just(n)) -> n
@@ -615,11 +638,13 @@ fun await-response( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet>
 // ----------------------------------------------------------------------------
 
 // Serve HTTP/2 on a connection whose first bytes (`initial`, possibly empty)
-// have already been read. `on-request` gets the request headers (with the pseudo
-// headers `:method`, `:path`, `:scheme` and `:authority`) and body, and returns
-// `(status, headers, body)`. The connection is closed after `idle-timeout`
-// without requests.
-pub fun h2-serve( s : net-stream, initial : bytes, on-request : (h2-headers, bytes) -> <async,exn,ndet|e> (int, list<(string, string)>, bytes),
+// have already been read. `on-request` gets the request headers (with the
+// pseudo headers `:method`, `:path`, `:scheme` and `:authority`) when they
+// arrive, and the body as a stream of its DATA frames; it returns
+// `(status, headers, body)`. If it does not read the body to the end, the
+// stream is reset (with `NO_ERROR`) after the response. The connection is
+// closed after `idle-timeout` without requests.
+pub fun h2-serve( s : net-stream, initial : bytes, on-request : h2-handler<e>,
                   idle-timeout : duration = 5.seconds ) : <async,exn,ndet|e> ()
   val now = now-ms()
   val st : ref<global,h2state> = async-ioc { ref(new-state(initial, False, now)) }
@@ -632,7 +657,7 @@ pub fun h2-serve( s : net-stream, initial : bytes, on-request : (h2-headers, byt
   else c.fail-with(err-protocol, "invalid connection preface")
 
 // Run the reader and the workers.
-fun serve-frames( c : h2conn, idle-timeout : duration, on-request : (h2-headers, bytes) -> <async,exn,ndet|e> (int, list<(string, string)>, bytes) ) : <async,exn,ndet|e> ()
+fun serve-frames( c : h2conn, idle-timeout : duration, on-request : h2-handler<e> ) : <async,exn,ndet|e> ()
   val workers = list(1, server-workers).map(fn(_) fn() c.server-worker(on-request, 0))
   val _ = interleaved(Cons(fn() c.server-reader(idle-timeout, 0), workers))
   ()
@@ -668,24 +693,66 @@ fun server-reader( c : h2conn, idle-timeout : duration, round : int ) : <async,n
   else list(1, server-workers).foreach(fn(_) c.queue.emit(Nothing))
 
 // Handle complete requests until stopped.
-fun server-worker( c : h2conn, on-request : (h2-headers, bytes) -> <async,exn,ndet|e> (int, list<(string, string)>, bytes), round : int ) : <async,exn,ndet|e> ()
+fun server-worker( c : h2conn, on-request : h2-handler<e>, round : int ) : <async,exn,ndet|e> ()
   match c.queue.receive
     Just(sid) ->
       mask<exn>{ catch(fn(_) (), { c.respond(sid, on-request) }) }
       c.server-worker(on-request, pretend-decreasing(round + 1))
     Nothing -> ()
 
-fun respond( c : h2conn, sid : int, on-request : (h2-headers, bytes) -> <async,exn,ndet|e> (int, list<(string, string)>, bytes) ) : <async,exn,ndet|e> ()
+fun respond( c : h2conn, sid : int, on-request : h2-handler<e> ) : <async,exn,ndet|e> ()
   val s = async-ioc { get-state(c.state).find-stream(sid) }
   match s
     Nothing -> ()
     Just(req) ->
       with finally
-        async-ioc
+        val unfinished = async-ioc
           val st = get-state(c.state)
-          set-state(c, st(c-streams = st.c-streams.filter(fn(x) x.s-sid != sid)))
+          val x = st.find-stream(sid)
+          set-state(c, st(c-streams = st.c-streams.filter(fn(y) y.s-sid != sid)))
+          match x
+            Just(y) -> !y.s-done && y.s-reset < 0 && !st.c-closed
+            Nothing -> False
+        // the client is still sending a body that was not read: stop it (RFC 9113 section 8.1)
+        if unfinished then catch(fn(_) (), { c.send(rst-stream(sid, err-no-error)) })
       if req.s-reset >= 0 then return ()
-      val (status, hs, body) = mask<exn>{ catch(fn(e) (500, [("content-type", "text/plain; charset=utf-8")], ("internal server error: " ++ e.message).bytes), { on-request(req.s-headers, req.s-body.reverse.join) }) }
+      val body-in = c.request-body(sid, req.s-ch)
+      val (status, hs, body) = mask<exn>{ catch(fn(e) (500, [("content-type", "text/plain; charset=utf-8")], H2-bytes(("internal server error: " ++ e.message).bytes)),
+                                                { on-request(req.s-headers, body-in) }) }
       val method = req.s-headers.lookup(fn(n) n == ":method").default("")
-      val body' = if method == "HEAD" then bytes/empty else body
-      c.send-message(sid, req.s-ch, Cons((":status", status.show), hs.h2-filter-headers), body')
+      val hs' = Cons((":status", status.show), hs.h2-filter-headers)
+      match body
+        H2-bytes(b) -> c.send-message(sid, req.s-ch, hs', if method == "HEAD" then bytes/empty else b)
+        H2-writer(_) | method == "HEAD" -> c.send-message(sid, req.s-ch, hs', bytes/empty)
+        H2-writer(w) ->
+          val max-frame = async-ioc { get-state(c.state).c-max-frame }
+          c.send(header-frames(sid, hpack-encode(hs'), False, max-frame))
+          val ok = catch(fn(_) False, {
+            pretend-no-div { w(fn(part) if !part.is-empty then pretend-no-ndet { c.send-body(sid, req.s-ch, part, False) }) }
+            True })
+          if ok then c.send(frame-bytes(frame-data, flag-end-stream, sid, bytes/empty))
+          else catch(fn(_) (), { c.send(rst-stream(sid, err-internal)) })
+
+// The body of a request as a stream: the data received on stream `sid` so
+// far, and then the data as it arrives. The stream's flow control window is
+// given back as the data is read.
+fun request-body( c : h2conn, sid : int, ch : channel<()> ) : seq<<async,exn,ndet|e>,bytes>
+  seq/suspend fn()
+    val (found, data, done, reset) = async-ioc
+      val st = get-state(c.state)
+      match st.find-stream(sid)
+        Just(x) ->
+          set-state(c, st.update-stream(sid, fn(y) y(s-body = [])))
+          (True, x.s-body.reverse.join, x.s-done, x.s-reset)
+        Nothing -> (False, bytes/empty, False, -1)
+    if !found then throw("http2: the stream was closed")
+    elif reset >= 0 then throw("http2: stream reset by the peer (error " ++ reset.show ++ ")")
+    elif !data.is-empty then
+      if !done then c.send(window-update(sid, data.length))
+      Yield(data, c.request-body(pretend-decreasing(sid), ch))
+    elif done then Done
+    else
+      val err = async-ioc { get-state(c.state).c-error }
+      if !err.is-empty then throw(err)
+      ch.receive
+      c.request-body(pretend-decreasing(sid), ch).next

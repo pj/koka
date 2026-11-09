@@ -1,0 +1,19 @@
+538894 bytes, in parts
+50000 lines
+8893 bytes, in parts
+0 bytes
+("chunked",3000)
+("read body","3 bytes",Just("keep-alive"),True)
+("partly read","line ",Just("close"),False)
+("ignored","ignored",Just("close"),False)
+("echo","echoed",Just("keep-alive"),True)
+continued: HTTP/1.1 200 OK / 5 bytes
+no continue: HTTP/1.1 200 OK / ignored
+continued: HTTP/1.1 200 OK / 5 bytes
+("HTTP/2","3233364 bytes, in parts")
+("partly read","line ")
+("ignored","ignored")
+("echo",True,True)
+("lines","50000 lines")
+("same connection",True)
+("HTTP/2","3233364 bytes")

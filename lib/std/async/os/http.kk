@@ -50,6 +50,7 @@
 module async/os/http
 
 import std/core/undiv
+import std/core/unsafe
 import std/time/duration
 import std/time/timer
 import async/async
@@ -90,12 +91,13 @@ pub struct http-response
   body-writer : maybe<body-writer> = Nothing   // on the server: produce the body in parts (see `stream-response`)
 
 // A function that produces a response body in parts: it calls `write` with
-// each part as it becomes available.
-pub alias body-writer = (write : bytes -> <async,exn> ()) -> <async,exn,ndet> ()
+// each part as it becomes available. (It may diverge, as when it copies a
+// stream.)
+pub alias body-writer = (write : bytes -> <async,exn> ()) -> <async,exn,ndet,div> ()
 
 // A response whose body is produced in parts by `writer`, and sent as it is
-// produced (with chunked transfer encoding over HTTP/1.1; HTTP/2 and
-// HTTP/1.0 responses collect the parts first).
+// produced (with chunked transfer encoding over HTTP/1.1, as DATA frames over
+// HTTP/2; HTTP/1.0 responses collect the parts first).
 //
 // ```
 // stream-response(200, "text/plain") fn(write)
@@ -122,7 +124,7 @@ fun send-response( sock : net-stream, method : string, version : string, status-
 fun send-chunked( sock : net-stream, status-line : string, hs : headers, w : body-writer ) : <async,exn,ndet> ()
   val hsc = hs.remove-headers(["Content-Length"]).set-header("Transfer-Encoding", "chunked")
   sock.write-all(head-text(status-line, hsc).bytes)
-  w(fn(part) send-chunk(sock, part))
+  pretend-no-div { w(fn(part) send-chunk(sock, part)) }
   sock.write-all("0\r\n\r\n".bytes)
 
 fun send-chunk( sock : net-stream, part : bytes ) : <async,exn> ()
@@ -132,7 +134,7 @@ fun send-chunk( sock : net-stream, part : bytes ) : <async,exn> ()
 // Run a body writer and collect its parts.
 fun collect-body( w : body-writer ) : <async,exn,ndet> bytes
   val parts : ref<global,list<bytes>> = async-ioc { ref([]) }
-  w(fn(b) async-ioc { parts := Cons(b, read-parts(parts)) })
+  pretend-no-div { w(fn(b) async-ioc { parts := Cons(b, read-parts(parts)) }) }
   async-ioc { read-parts(parts) }.reverse.join
 
 fun read-parts( r : ref<global,list<bytes>> ) : <read<global>,div> list<bytes>
@@ -470,8 +472,10 @@ fun send-request( client : maybe<http-client>, method : string, u : url, headers
     Nothing ->
       val s = connect()
       with finally { s.close }
-      write-message(s, start-line, hs, body)
-      val (res, _, _) = read-response(Reader(s, bytes/empty), method)
+      val sent = catch(fn(e) Just(e), { write-message(s, start-line, hs, body); Nothing })
+      val (res, _, _) = match sent
+        Nothing -> read-response(Reader(s, bytes/empty), method)
+        Just(err) -> early-response(s, method, err)
       res
     Just(c) ->
       val origin = u.scheme ++ "://" ++ u.host.to-lower ++ ":" ++ conn-port.show
@@ -551,24 +555,26 @@ fun read-response( r : reader, method : string ) : <async,exn> (http-response, r
 // The body of a response as a stream, read from the connection as it is consumed.
 fun body-stream( r : reader, hs : headers ) : byte-stream<<async,exn|e>>
   val te = hs.header("Transfer-Encoding").default("").to-lower
-  if te.find("chunked").is-just then chunked-stream(r)
+  if te.find("chunked").is-just then chunked-stream(r, fn(_) ())
   else match hs.header("Content-Length").map(fn(cl) cl.trim.parse-int)
-    Just(Just(n)) -> length-stream(r, n)
+    Just(Just(n)) -> length-stream(r, n, fn(_) ())
     Just(Nothing) -> seq/suspend(fn() throw("http: invalid Content-Length"))
     Nothing -> eof-stream(r)
 
-// `left` more bytes.
-fun length-stream( r : reader, left : int ) : byte-stream<<async,exn|e>>
+// `left` more bytes. At the end, `at-end` gets the reader after the body.
+fun length-stream( r : reader, left : int, at-end : reader -> () ) : byte-stream<<async,exn|e>>
   seq/suspend fn()
-    if left <= 0 then Done
+    if left <= 0 then
+      at-end(r)
+      Done
     elif !r.buf.is-empty then
       val n = min(left, r.buf.length)
-      Yield(r.buf.subbytes(0, n), length-stream(Reader(r.sock, r.buf.subbytes(n)), pretend-decreasing(left - n)))
+      Yield(r.buf.subbytes(0, n), length-stream(Reader(r.sock, r.buf.subbytes(n)), pretend-decreasing(left - n), at-end))
     else
       val more = r.sock.read
       if more.is-empty then throw("http: connection closed in the middle of a message body")
       val n = min(left, more.length)
-      Yield(more.subbytes(0, n), length-stream(Reader(r.sock, more.subbytes(n)), pretend-decreasing(left - n)))
+      Yield(more.subbytes(0, n), length-stream(Reader(r.sock, more.subbytes(n)), pretend-decreasing(left - n), at-end))
 
 // Everything until the connection is closed.
 fun eof-stream( r : reader ) : byte-stream<<async,exn|e>>
@@ -578,8 +584,9 @@ fun eof-stream( r : reader ) : byte-stream<<async,exn|e>>
       val more = r.sock.read
       if more.is-empty then Done else Yield(more, eof-stream(pretend-decreasing(Reader(r.sock, bytes/empty))))
 
-// A chunked body (RFC 9112 section 7.1), one chunk at a time.
-fun chunked-stream( r : reader ) : byte-stream<<async,exn|e>>
+// A chunked body (RFC 9112 section 7.1), one chunk at a time. At the end,
+// `at-end` gets the reader after the body.
+fun chunked-stream( r : reader, at-end : reader -> () ) : byte-stream<<async,exn|e>>
   seq/suspend fn()
     match r.read-until(crlf, 1024)
       Nothing -> throw("http: connection closed in a chunked body")
@@ -589,12 +596,12 @@ fun chunked-stream( r : reader ) : byte-stream<<async,exn|e>>
           Just(n) -> n
           Nothing -> throw("http: invalid chunk size " ++ size-text.show)
         if size == 0 then
-          val _ = skip-trailers(r1)
+          at-end(skip-trailers(r1))
           Done
         else
           val (chunk, r2) = r1.read-exact(size)
           val (_, r3) = r2.read-exact(2)   // CRLF after the chunk
-          Yield(chunk, chunked-stream(pretend-decreasing(r3)))
+          Yield(chunk, chunked-stream(pretend-decreasing(r3), at-end))
 
 // Send a request whose body is a stream, with chunked transfer encoding.
 fun write-streamed( s : net-stream, start-line : string, hs : headers, upload : byte-stream<<async,exn|e>> ) : <async,exn,div|e> ()
@@ -650,10 +657,17 @@ fun stream-once( method : string, u : url, headers : headers, body : bytes, uplo
   val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, crl = tls.crl)
           else plain-stream(tcp-connect(u.host, conn-port))
   with finally { s.close }
-  match upload
-    Just(up) -> write-streamed(s, start-line, hs, up)
-    Nothing -> write-message(s, start-line, hs, body)
-  val (status, reason, rhs, r) = read-head(Reader(s, bytes/empty))
+  val sent = match upload
+    Just(up) ->   // (errors of the upload stream itself are raised)
+      write-streamed(s, start-line, hs, up)
+      Nothing
+    Nothing -> catch(fn(e) Just(e), { write-message(s, start-line, hs, body); Nothing })
+  // if sending failed, the server may still have answered
+  val (status, reason, rhs, r) = match sent
+    Nothing -> read-head(Reader(s, bytes/empty))
+    Just(err) -> match catch(fn(_) Nothing, { Just(read-head(Reader(s, bytes/empty))) })
+      Just(head) -> head
+      Nothing -> throw-exn(err)
   val is-redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
   match rhs.header("Location")
     Just(location) | is-redirect && redirects-left > 0 ->
@@ -885,20 +899,29 @@ fun exchange( c : http-client, key : string, s : net-stream, can-retry : bool,
   with finally
     val lifetime = async-ioc { !keep }
     if lifetime > 0 then c.put-idle(key, s, lifetime) else s.close
-  val started = catch(fn(exn) Error(exn), {
-    write-message(s, start-line, hs, body)
-    Ok(Reader(s, bytes/empty).fill)
-  })
+  // if sending fails, the server may still have answered (before it closed the connection)
+  val sent = catch(fn(e) Just(e), { write-message(s, start-line, hs, body); Nothing })
+  val started = catch(fn(exn) Error(exn), { Ok(Reader(s, bytes/empty).fill) })
   match started
     Ok((True, r)) ->
       val (res, rest, reusable) = read-response(r, method)
-      if reusable && rest.buf.is-empty then
+      if reusable && rest.buf.is-empty && sent.is-nothing then
         val lifetime = c.idle-lifetime(res.headers)
         async-ioc { keep := lifetime }
       Just(res)
     _ | can-retry -> Nothing
-    Ok(_) -> throw("http: connection closed before the response")
-    Error(exn) -> throw-exn(exn)
+    Ok(_) -> match sent
+      Just(err) -> throw-exn(err)
+      Nothing -> throw("http: connection closed before the response")
+    Error(exn) -> throw-exn(sent.default(exn))
+
+// Sending a request failed with `err`: read the response the server may have
+// sent before it closed the connection (for example, after rejecting a large
+// body without reading it); raise `err` if there is none.
+fun early-response( s : net-stream, method : string, err : exception ) : <async,exn> (http-response, reader, bool)
+  match catch(fn(_) Nothing, { Just(read-response(Reader(s, bytes/empty), method)) })
+    Just((res, r, _)) -> (res, r, False)
+    Nothing -> throw-exn(err)
 
 // Send an HTTP request through the client (see `http-request`).
 pub fun client/http-request( c : http-client, method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10 ) : <async,exn,net,ndet> http-response
@@ -952,43 +975,76 @@ pub fun http-get-text( url : string ) : <async,exn,net,ndet> string
 pub fun http-serve( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config> = Nothing,
                     idle-timeout : duration = 5.seconds, request-timeout : duration = 60.seconds, compress : bool = False ) : <async,exn,ndet|e> ()
   val serve-fn = if compress then (fn(req) gzip-response(req, on-request(req))) else on-request
-  serve-all(srv, serve-fn, tls, idle-timeout, request-timeout)
+  serve-all(srv, Buffered(serve-fn), tls, idle-timeout, request-timeout)
 
-fun serve-all( srv : tcp-server, on-request : http-request -> <async,exn,ndet|e> http-response, tls : maybe<tls-config>,
+// Like `http-serve`, but `on-request` gets the request body as a stream
+// (`body` of the request is empty), read from the connection as it is
+// consumed; so large uploads need not fit in memory. Read the stream once,
+// either in `on-request` or in the `body-writer` of the response (see
+// `stream-response`). A client that sent `Expect: 100-continue` is told to
+// continue when the body is first read. If the body is not read to the end,
+// the connection is closed after the response (over HTTP/2: the stream is
+// reset). `request-timeout` covers only the request line and headers.
+//
+// ```
+// http-serve-stream(server) fn(req, body)
+//   val n = body.foldl(0, fn(n, part) n + part.length)
+//   text-response(200, "received " ++ n.show ++ " bytes")
+// ```
+pub fun http-serve-stream( srv : tcp-server, on-request : (http-request, byte-stream<<async,exn,ndet|e>>) -> <async,exn,ndet,div|e> http-response,
+                           tls : maybe<tls-config> = Nothing, idle-timeout : duration = 5.seconds, request-timeout : duration = 60.seconds,
+                           compress : bool = False ) : <async,exn,ndet|e> ()
+  val serve-fn = if compress then (fn(req, body) gzip-response(req, on-request(req, body))) else on-request
+  serve-all(srv, Streaming(serve-fn), tls, idle-timeout, request-timeout)
+
+// A request handler: with the body read first, or as a stream.
+type responder<e>
+  Buffered( on-request : http-request -> <async,exn,ndet|e> http-response )
+  Streaming( on-stream : (http-request, byte-stream<<async,exn,ndet|e>>) -> <async,exn,ndet,div|e> http-response )
+
+fun responder/call( h : responder<e>, req : http-request, body : byte-stream<<async,exn,ndet|e>> ) : <async,exn,ndet|e> http-response
+  match h
+    Buffered(f)  -> f(req)
+    Streaming(f) -> pretend-no-div { f(req, body) }
+
+fun serve-all( srv : tcp-server, h : responder<e>, tls : maybe<tls-config>,
                idle-timeout : duration, request-timeout : duration ) : <async,exn,ndet|e> ()
   srv.serve fn(conn)
     match tls
-      Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), on-request, True, idle-timeout, request-timeout)
+      Nothing -> serve-connection(Reader(plain-stream(conn), bytes/empty), h, True, idle-timeout, request-timeout)
       Just(config) ->
         val s = conn.tls-accept(config)
         if s.alpn-protocol == Just("h2") then
           val (peer-ip, peer-port) = s.peer-address
           val client-cert = s.peer-certificate.default("")
-          h2-serve(s, bytes/empty, h2-adapter(on-request, peer-ip ++ ":" ++ peer-port.show, client-cert), idle-timeout)
+          h2-serve(s, bytes/empty, h2-adapter(h, peer-ip ++ ":" ++ peer-port.show, client-cert), idle-timeout)
         else
-          serve-connection(Reader(s, bytes/empty), on-request, True, idle-timeout, request-timeout)
+          serve-connection(Reader(s, bytes/empty), h, True, idle-timeout, request-timeout)
           s.close-notify
 
-// Adapt a request handler to HTTP/2 header lists.
-fun h2-adapter( on-request : http-request -> <async,exn,ndet|e> http-response, peer : string, client-cert : string )
-              : ((h2-headers, bytes) -> <async,exn,ndet|e> (int, list<(string, string)>, bytes))
-  fn(hs, req-body)
+// Adapt a request handler to HTTP/2 header lists; bodies are streamed both
+// ways (a `Buffered` handler gets the request body collected).
+fun h2-adapter( h : responder<e>, peer : string, client-cert : string ) : h2-handler<e>
+  fn(hs, body-in)
     fun pseudo( name : string ) : string
       hs.lookup(fn(n) n == name).default("")
     val plain = hs.filter(fn((n, _)) !n.starts-with(":").is-just)
     val hs' = if plain.header("host").is-just then plain else Cons(("host", pseudo(":authority")), plain)
-    val res = on-request(Http-request(pseudo(":method"), pseudo(":path"), hs', req-body, peer, client-cert, "HTTP/2"))
+    val req = Http-request(pseudo(":method"), pseudo(":path"), hs', bytes/empty, peer, client-cert, "HTTP/2")
+    val res = match h
+      Buffered(f)  -> f(req(body = pretend-no-div { body-in.read-all }))
+      Streaming(f) -> pretend-no-div { f(req, body-in) }
     match res.body-writer
-      Just(w) -> (res.status, res.headers, collect-body(w))
-      Nothing -> (res.status, res.headers, res.body)
+      Just(w) -> (res.status, res.headers, H2-writer(w))
+      Nothing -> (res.status, res.headers, H2-bytes(res.body))
 
-// A request read by the server.
+// A request read by the server (its head, and with `Buffered` handlers its body).
 type incoming
   In-closed                    // the client closed the connection
   In-bad                       // an invalid request line
   In-request( method : string, target : string, version : string, headers : headers, body : bytes, rest : reader )
 
-fun read-request( r : reader ) : <async,exn> incoming
+fun read-request( r : reader, with-body : bool ) : <async,exn> incoming
   match r.read-until(crlfcrlf, 64 * 1024)
     Nothing -> In-closed
     Just((head-bytes, r1)) ->
@@ -996,20 +1052,52 @@ fun read-request( r : reader ) : <async,exn> incoming
       match lines.head.default("").split(" ")
         [method, target, version] ->
           val hs = parse-headers(lines.drop(1))
-          val (req-body, r2) = r1.read-body(hs, False)
-          In-request(method, target, version, hs, req-body, r2)
+          if with-body && !(method == "PRI" && version == "HTTP/2.0") then
+            if expects-continue(version, hs) && has-body(hs) then r1.sock.write-all(continue-response)
+            val (req-body, r2) = r1.read-body(hs, False)
+            In-request(method, target, version, hs, req-body, r2)
+          else In-request(method, target, version, hs, bytes/empty, r1)
         _ -> In-bad
 
-fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e> http-response, first : bool,
+val continue-response = "HTTP/1.1 100 Continue\r\n\r\n".bytes
+
+fun expects-continue( version : string, hs : headers ) : bool
+  version == "HTTP/1.1" && hs.header("Expect").map(fn(v) v.trim.to-lower) == Just("100-continue")
+
+// Does a request have a body? (Requests without a length have none.)
+fun has-body( hs : headers ) : bool
+  hs.header("Transfer-Encoding").default("").to-lower.find("chunked").is-just ||
+  hs.header("Content-Length").map(fn(cl) cl.trim.parse-int.default(0) > 0).default(False)
+
+// The body of a request as a stream. When it was read to the end, `ended`
+// holds the reader after it (so the next request on the connection can be
+// read). An `Expect: 100-continue` is answered when the body is first read.
+fun request-stream( r : reader, hs : headers, send-continue : bool, ended : ref<global,maybe<reader>> ) : byte-stream<<async,exn|e>>
+  val at-end = fn(r-end : reader) unsafe-total { ended := Just(r-end) }
+  val te = hs.header("Transfer-Encoding").default("").to-lower
+  val body = if te.find("chunked").is-just then chunked-stream(r, at-end)
+    else match hs.header("Content-Length").map(fn(cl) cl.trim.parse-int)
+      Just(Just(n)) | n >= 0 -> length-stream(r, n, at-end)
+      Just(_) -> seq/suspend(fn() throw("http: invalid Content-Length"))
+      Nothing -> length-stream(r, 0, at-end)
+  if !send-continue then body
+  else seq/suspend fn()
+    r.sock.write-all(continue-response)
+    body.next
+
+fun serve-connection( r : reader, h : responder<e>, first : bool,
                       idle-timeout : duration, request-timeout : duration ) : <async,exn,ndet|e> ()
   // wait (at most `idle-timeout`) for the next request to start
   val ready = if first || !r.buf.is-empty then Just(r) else
     match timeout(idle-timeout, { r.fill })
       Just((True, r1)) -> Just(r1)
       _ -> Nothing
+  val buffered = match h
+    Buffered -> True
+    _ -> False
   match ready
     Nothing -> ()   // idle for too long, or closed by the client
-    Just(r0) -> match timeout(request-timeout, { read-request(r0) })
+    Just(r0) -> match timeout(request-timeout, { read-request(r0, buffered) })
       Nothing ->
         catch(fn(_) (), { write-message(r.sock, "HTTP/1.1 408 Request Timeout", [("Connection", "close")], "request timeout".bytes) })
       Just(In-closed) -> ()
@@ -1018,14 +1106,21 @@ fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e
       Just(In-request("PRI", "*", "HTTP/2.0", _, _, r2)) | first ->
         // the HTTP/2 connection preface: switch to HTTP/2 (prior knowledge)
         val (peer-ip, peer-port) = r.sock.peer-address
-        h2-serve(r.sock, "PRI * HTTP/2.0\r\n\r\n".bytes ++ r2.buf, h2-adapter(on-request, peer-ip ++ ":" ++ peer-port.show, ""), idle-timeout)
+        h2-serve(r.sock, "PRI * HTTP/2.0\r\n\r\n".bytes ++ r2.buf, h2-adapter(h, peer-ip ++ ":" ++ peer-port.show, ""), idle-timeout)
       Just(In-request(method, target, version, hs, req-body, r2)) ->
         val (peer-ip, peer-port) = r.sock.peer-address
         val client-cert = r.sock.peer-certificate.default("")
-        val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show, client-cert)
-        val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { on-request(req) }) }
+        val req = Http-request(method, target, hs, req-body, peer-ip ++ ":" ++ peer-port.show, client-cert, version)
+        // with a streamed body, the reader after the body is known once it was read to the end
+        val ended : ref<global,maybe<reader>> = unsafe-total { ref(if buffered || !has-body(hs) then Just(r2) else Nothing) }
+        val body = if buffered then seq/empty() else request-stream(r2, hs, expects-continue(version, hs), ended)
+        val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { h.call(req, body) }) }
+        fun body-done() : maybe<reader>
+          unsafe-total { !ended }
         val keep-alive = match hs.header("Connection").map(to-lower)
           _ | res.header("Connection").map(to-lower) == Just("close") -> False
+          // an unread body that the response will not read either: close instead of reading it
+          _ | body-done().is-nothing && res.body-writer.is-nothing -> False
           Just("close") -> False
           Just("keep-alive") -> True
           _ -> version == "HTTP/1.1"
@@ -1036,4 +1131,18 @@ fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e
         val reason = if res.reason.is-empty then reason-phrase(res.status) else res.reason
         val status-line = "HTTP/1.1 " ++ res.status.show ++ " " ++ reason
         send-response(r.sock, method, version, status-line, res-headers, res)
-        if keep-alive then serve-connection(pretend-decreasing(r2), on-request, False, idle-timeout, request-timeout)
+        match body-done()
+          Just(r3) | keep-alive -> serve-connection(pretend-decreasing(r3), h, False, idle-timeout, request-timeout)
+          Nothing -> linger(r.sock)   // the request body was not read: the connection is closed
+          _ -> ()
+
+// Before closing a connection whose request body was not read, read (and
+// discard) what the client still sends, for a while: closing a socket with
+// unread data resets the connection, and the client could lose the response
+// (RFC 9112 section 9.6).
+fun linger( s : net-stream ) : <async,ndet> ()
+  fun discard( left : int ) : <async,exn> ()
+    if left > 0 then
+      val more = s.read
+      if !more.is-empty then discard(pretend-decreasing(left - more.length))
+  catch(fn(_) (), { val _ = timeout(2.seconds, { discard(4 * 1024 * 1024) }); () })
