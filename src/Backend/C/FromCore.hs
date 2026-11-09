@@ -2812,6 +2812,14 @@ reserved
     [ "errno"
     , "exception_info"
     , "or"
+    , "stdin"     -- macros in the C library (e.g. MinGW and MSVC)
+    , "stdout"
+    , "stderr"
+    , "assert"
+    , "near"      -- macros in the Windows headers
+    , "far"
+    , "small"
+    , "interface"
     ]
     ++ -- common globals
     [ "timezone"
