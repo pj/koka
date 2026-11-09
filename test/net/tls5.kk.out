@@ -1,0 +1,7 @@
+good, no CRL: ok
+good, CRL: ok
+revoked, no CRL: ok
+revoked, CRL: rejected (revoked)
+client good: ok
+client revoked: rejected
+rejected

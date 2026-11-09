@@ -32,6 +32,7 @@ typedef struct kk_tls_conf_s {
   mbedtls_x509_crt         cert;
   mbedtls_pk_context       key;
   mbedtls_x509_crt         client_ca;   // to verify client certificates
+  mbedtls_x509_crl         client_crl;  // revoked client certificates
   int                      sni_count;   // certificates selected by the server name (SNI)
   char*                    sni_names[KK_TLS_MAX_SNI];
   mbedtls_x509_crt         sni_cert[KK_TLS_MAX_SNI];
@@ -47,6 +48,7 @@ typedef struct kk_tls_s {
   mbedtls_ssl_context      ssl;
   mbedtls_ssl_config       conf;
   mbedtls_x509_crt         ca;
+  mbedtls_x509_crl         crl;         // revoked certificates (clients only)
   mbedtls_x509_crt         own_cert;    // client certificate (clients only)
   mbedtls_pk_context       own_key;
   char*        alpn_buf;
@@ -149,6 +151,7 @@ static void kk_tls_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
   if (t->has_sconf) kk_box_drop(t->sconf, ctx);   // after the ssl context that refers to it
   mbedtls_ssl_config_free(&t->conf);
   mbedtls_x509_crt_free(&t->ca);
+  mbedtls_x509_crl_free(&t->crl);
   mbedtls_x509_crt_free(&t->own_cert);
   mbedtls_pk_free(&t->own_key);
   mbedtls_ctr_drbg_free(&t->drbg);
@@ -168,6 +171,7 @@ static kk_tls_t* kk_tls_alloc( kk_box_t* res, kk_context_t* ctx ) {
   mbedtls_ssl_init(&t->ssl);
   mbedtls_ssl_config_init(&t->conf);
   mbedtls_x509_crt_init(&t->ca);
+  mbedtls_x509_crl_init(&t->crl);
   mbedtls_x509_crt_init(&t->own_cert);
   mbedtls_pk_init(&t->own_key);
   mbedtls_ctr_drbg_init(&t->drbg);
@@ -181,10 +185,11 @@ static kk_tls_t* kk_tls_alloc( kk_box_t* res, kk_context_t* ctx ) {
 // certificates. If `cert` is not empty, it is presented (with private key
 // `key`) as the client certificate. `alpn` is a comma separated list of
 // protocols to offer. Check `kk_tls_error` for failures.
-kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_string_t cert, kk_string_t key, kk_string_t alpn, kk_context_t* ctx ) {
+kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_string_t crl, kk_string_t cert, kk_string_t key, kk_string_t alpn, kk_context_t* ctx ) {
   kk_box_t res;
   kk_tls_t* t = kk_tls_alloc(&res, ctx);
   int ret;
+  mbedtls_x509_crl* pcrl = NULL;
   psa_status_t st = psa_crypto_init();
   if (st != PSA_SUCCESS) { snprintf(t->error, sizeof(t->error), "unable to initialize the crypto library (%d)", (int)st); goto done; }
   ret = mbedtls_ctr_drbg_seed(&t->drbg, mbedtls_entropy_func, &t->entropy, (const unsigned char*)"koka-tls", 8);
@@ -192,12 +197,19 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_string_t 
   ret = mbedtls_ssl_config_defaults(&t->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM, MBEDTLS_SSL_PRESET_DEFAULT);
   if (ret != 0) { kk_tls_set_error(t, "unable to configure TLS", ret); goto done; }
   mbedtls_ssl_conf_rng(&t->conf, mbedtls_ctr_drbg_random, &t->drbg);
+  if (verify && kk_string_len_borrow(crl, ctx) > 0) {
+    kk_with_string_as_qutf8_borrow(crl, ccrl, ctx) {
+      ret = mbedtls_x509_crl_parse(&t->crl, (const unsigned char*)ccrl, strlen(ccrl) + 1);
+    }
+    if (ret != 0) { kk_tls_set_error(t, "invalid certificate revocation list", ret); goto done; }
+    pcrl = &t->crl;
+  }
   if (verify && kk_string_len_borrow(ca, ctx) > 0) {
     kk_with_string_as_qutf8_borrow(ca, cca, ctx) {
       ret = mbedtls_x509_crt_parse(&t->ca, (const unsigned char*)cca, strlen(cca) + 1);
     }
     if (ret != 0) { kk_tls_set_error(t, "invalid CA certificate", ret); goto done; }
-    mbedtls_ssl_conf_ca_chain(&t->conf, &t->ca, NULL);
+    mbedtls_ssl_conf_ca_chain(&t->conf, &t->ca, pcrl);
     mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   }
   else if (verify) {
@@ -205,7 +217,7 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_string_t 
       snprintf(t->error, sizeof(t->error), "no CA certificates found (set SSL_CERT_FILE to a certificate bundle)");
       goto done;
     }
-    mbedtls_ssl_conf_ca_chain(&t->conf, &t->ca, NULL);
+    mbedtls_ssl_conf_ca_chain(&t->conf, &t->ca, pcrl);
     mbedtls_ssl_conf_authmode(&t->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
   }
   else {
@@ -235,6 +247,7 @@ kk_box_t kk_tls_new( kk_string_t host, bool verify, kk_string_t ca, kk_string_t 
 done:
   kk_string_drop(host, ctx);
   kk_string_drop(ca, ctx);
+  kk_string_drop(crl, ctx);
   kk_string_drop(cert, ctx);
   kk_string_drop(key, ctx);
   kk_string_drop(alpn, ctx);
@@ -252,6 +265,7 @@ static void kk_tls_conf_free_fun( void* p, kk_block_t* b, kk_context_t* ctx ) {
   mbedtls_ssl_config_free(&c->conf);
   mbedtls_x509_crt_free(&c->cert);
   mbedtls_x509_crt_free(&c->client_ca);
+  mbedtls_x509_crl_free(&c->client_crl);
   mbedtls_pk_free(&c->key);
   for (int i = 0; i < c->sni_count; i++) {
     free(c->sni_names[i]);
@@ -324,11 +338,12 @@ static int kk_tls_conf_sni( kk_tls_conf_t* c, const char* sni ) {
 // clients are asked for a certificate signed by it; `client_cert_required`
 // rejects clients without one. `alpn` is a comma separated list of protocols
 // in order of preference. Check `kk_tls_server_config_error`.
-kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_t client_ca, bool client_cert_required, kk_string_t alpn, kk_string_t sni, kk_context_t* ctx ) {
+kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_t client_ca, kk_string_t client_crl, bool client_cert_required, kk_string_t alpn, kk_string_t sni, kk_context_t* ctx ) {
   kk_tls_conf_t* c = (kk_tls_conf_t*)calloc(1, sizeof(kk_tls_conf_t));
   mbedtls_ssl_config_init(&c->conf);
   mbedtls_x509_crt_init(&c->cert);
   mbedtls_x509_crt_init(&c->client_ca);
+  mbedtls_x509_crl_init(&c->client_crl);
   mbedtls_pk_init(&c->key);
   mbedtls_ctr_drbg_init(&c->drbg);
   mbedtls_entropy_init(&c->entropy);
@@ -356,7 +371,15 @@ kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_
       ret = mbedtls_x509_crt_parse(&c->client_ca, (const unsigned char*)cca, strlen(cca) + 1);
     }
     if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid client CA certificate", ret); goto done; }
-    mbedtls_ssl_conf_ca_chain(&c->conf, &c->client_ca, NULL);
+    mbedtls_x509_crl* pcrl = NULL;
+    if (kk_string_len_borrow(client_crl, ctx) > 0) {
+      kk_with_string_as_qutf8_borrow(client_crl, ccrl, ctx) {
+        ret = mbedtls_x509_crl_parse(&c->client_crl, (const unsigned char*)ccrl, strlen(ccrl) + 1);
+      }
+      if (ret != 0) { kk_tls_format_error(c->error, sizeof(c->error), "invalid client certificate revocation list", ret); goto done; }
+      pcrl = &c->client_crl;
+    }
+    mbedtls_ssl_conf_ca_chain(&c->conf, &c->client_ca, pcrl);
     mbedtls_ssl_conf_authmode(&c->conf, client_cert_required ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_OPTIONAL);
   }
   ret = kk_tls_conf_alpn(&c->conf, alpn, &c->alpn_buf, c->alpn, ctx);
@@ -367,6 +390,7 @@ kk_box_t kk_tls_server_config_new( kk_string_t cert, kk_string_t key, kk_string_
   if (ret != 0) goto done;
 done:
   kk_string_drop(sni, ctx);
+  kk_string_drop(client_crl, ctx);
   kk_string_drop(cert, ctx);
   kk_string_drop(key, ctx);
   kk_string_drop(client_ca, ctx);

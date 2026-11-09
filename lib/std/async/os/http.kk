@@ -299,18 +299,20 @@ fun write-message( s : net-stream, start-line : string, hs : headers, body : byt
 // `Accept-Encoding`, the body is returned as it was sent.
 //
 // For `https`, the server certificate is checked against the system CA
-// certificates, or only against `tls-ca` (PEM certificates) if it is given.
+// certificates, or only against `tls-ca` (PEM certificates) if it is given,
+// and it is rejected if a certificate revocation list in `tls-crl` (PEM) revokes it.
 // A client certificate (`tls-cert`, PEM) and its private key (`tls-key`) are
 // presented to servers that ask for one.
 pub fun http-request( method : string, url : string, headers : headers = [], body : bytes = bytes/empty, max-redirects : int = 10,
-                      tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net,ndet> http-response
-  request-url(Nothing, method, url, headers, body, max-redirects, Tls-opts(tls-ca, tls-cert, tls-key))
+                      tls-ca : string = "", tls-cert : string = "", tls-key : string = "", tls-crl : string = "" ) : <async,exn,net,ndet> http-response
+  request-url(Nothing, method, url, headers, body, max-redirects, Tls-opts(tls-ca, tls-cert, tls-key, tls-crl))
 
 // TLS settings of a client
-value struct tls-opts
+struct tls-opts
   ca : string
   cert : string
   key : string
+  crl : string
 
 fun request-url( client : maybe<http-client>, method : string, url : string, headers : headers, body : bytes, max-redirects : int, tls : tls-opts ) : <async,exn,net,ndet> http-response
   val u = match parse-url(url)
@@ -413,7 +415,7 @@ fun send-request( client : maybe<http-client>, method : string, u : url, headers
   val hs = if hs1.header("User-Agent").is-just then hs1 else hs1.set-header("User-Agent", "koka-http")
   val start-line = method ++ " " ++ target ++ " HTTP/1.1"
   fun connect() : <async,exn,net> net-stream
-    if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key) else plain-stream(tcp-connect(u.host, conn-port))
+    if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, crl = tls.crl) else plain-stream(tcp-connect(u.host, conn-port))
   match client
     Nothing ->
       val s = connect()
@@ -450,7 +452,7 @@ fun send-request( client : maybe<http-client>, method : string, u : url, headers
               with finally
                 val done = async-ioc { !dialed }
                 if dialer && !done then c.end-dial(origin, False)
-              val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, alpn = if c.http2 then ["h2", "http/1.1"] else [])
+              val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, crl = tls.crl, alpn = if c.http2 then ["h2", "http/1.1"] else [])
                       else plain-stream(tcp-connect(u.host, conn-port))
               val is-h2 = if u.scheme == "https" then s.alpn-protocol == Just("h2") else c.h2c
               if is-h2 then
@@ -557,14 +559,14 @@ fun set-h1-only( c : http-client, xs : list<string> ) : <write<global>,div> ()
 // only works with servers that support it.
 pub fun http-client( max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds,
                      tls-ca : string = "", tls-cert : string = "", tls-key : string = "",
-                     http2 : bool = True, h2c : bool = False ) : async http-client
-  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds, Tls-opts(tls-ca, tls-cert, tls-key), http2, h2c, ref([]), ref([]), ref([])) }
+                     http2 : bool = True, h2c : bool = False, tls-crl : string = "" ) : async http-client
+  async-ioc { Http-client(ref([]), max-idle-per-host, idle-timeout.milli-seconds, Tls-opts(tls-ca, tls-cert, tls-key, tls-crl), http2, h2c, ref([]), ref([]), ref([])) }
 
 // Create a client, run `action` with it, and close it afterwards.
 pub fun scoped/http-client( action : http-client -> <async,exn|e> a, max-idle-per-host : int = 4, idle-timeout : duration = 4.seconds,
                             tls-ca : string = "", tls-cert : string = "", tls-key : string = "",
-                            http2 : bool = True, h2c : bool = False ) : <async,exn|e> a
-  val c = http-client(max-idle-per-host, idle-timeout, tls-ca, tls-cert, tls-key, http2, h2c)
+                            http2 : bool = True, h2c : bool = False, tls-crl : string = "" ) : <async,exn|e> a
+  val c = http-client(max-idle-per-host, idle-timeout, tls-ca, tls-cert, tls-key, http2, h2c, tls-crl)
   with finally { c.close }
   action(c)
 
@@ -717,13 +719,13 @@ pub fun client/http-post( c : http-client, url : string, body : bytes, content-t
 
 // `GET` a URL.
 pub fun http-get( url : string, headers : headers = [], max-redirects : int = 10,
-                  tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net,ndet> http-response
-  http-request("GET", url, headers, max-redirects = max-redirects, tls-ca = tls-ca, tls-cert = tls-cert, tls-key = tls-key)
+                  tls-ca : string = "", tls-cert : string = "", tls-key : string = "", tls-crl : string = "" ) : <async,exn,net,ndet> http-response
+  http-request("GET", url, headers, max-redirects = max-redirects, tls-ca = tls-ca, tls-cert = tls-cert, tls-key = tls-key, tls-crl = tls-crl)
 
 // `POST` a body to a URL.
 pub fun http-post( url : string, body : bytes, content-type : string = "application/octet-stream", headers : headers = [], max-redirects : int = 10,
-                   tls-ca : string = "", tls-cert : string = "", tls-key : string = "" ) : <async,exn,net,ndet> http-response
-  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca, tls-cert, tls-key)
+                   tls-ca : string = "", tls-cert : string = "", tls-key : string = "", tls-crl : string = "" ) : <async,exn,net,ndet> http-response
+  http-request("POST", url, headers.set-header("Content-Type", content-type), body, max-redirects, tls-ca, tls-cert, tls-key, tls-crl)
 
 // `GET` a URL and return the body as text; raises an exception unless the status is 2xx.
 pub fun http-get-text( url : string ) : <async,exn,net,ndet> string

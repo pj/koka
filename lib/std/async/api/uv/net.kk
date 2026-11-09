@@ -62,7 +62,7 @@ pub extern net-set-nodelay( sock : any, enable : bool ) : ioc ()
   js "kk_net_set_nodelay"
 
 // Connect with TLS natively (Node.js only); returns a socket usable with the other primitives.
-pub extern net-tls-connect-setup( evloop : any, host : string, port : int32, servername : string, verify : bool, ca : string, cert : string, key : string, alpn : string, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
+pub extern net-tls-connect-setup( evloop : any, host : string, port : int32, servername : string, verify : bool, ca : string, crl : string, cert : string, key : string, alpn : string, cb : error<any> -> ioc () ) : ioc error<() -> ioc ()>
   c  "kk_net_tls_connect_setup"
   js "kk_net_tls_connect_setup"
 
