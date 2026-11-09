@@ -197,82 +197,197 @@ static void kk_task_exec( kk_task_t* task, kk_context_t* ctx ) {
 
 
 /*---------------------------------------------------------------------------
-  task group (thread pool with task queue)
+  task group (thread pool with work stealing)
+
+  Every worker has its own deque: tasks spawned by a worker are pushed on
+  its deque, and the worker takes its newest task first (which is usually
+  the most recently split piece of work, and keeps the stack shallow when a
+  worker helps out while waiting for a promise). An idle worker steals the
+  oldest task of another worker. Tasks scheduled by other threads (like the
+  main thread) go to a shared queue. Workers sleep when `pending` is zero.
 ---------------------------------------------------------------------------*/
+
+typedef struct kk_deque_s {
+  pthread_mutex_t lock;
+  kk_task_t**     items;    // a ring buffer
+  kk_ssize_t      start;
+  kk_ssize_t      count;
+  kk_ssize_t      cap;
+} kk_deque_t;
 
 typedef struct kk_task_group_s {
   bool            done;
-  kk_task_t*      tasks;
+  kk_task_t*      tasks;            // the shared queue (tasks from outside the pool)
   kk_task_t*      tasks_tail;
   pthread_cond_t  tasks_available;
-  pthread_mutex_t tasks_lock;
+  pthread_mutex_t tasks_lock;       // for the shared queue, `pending` changes, and sleeping
+  _Atomic(kk_ssize_t) pending;      // tasks queued anywhere
   pthread_t*      threads;
   kk_ssize_t      thread_count;
+  kk_deque_t*     deques;           // one per worker
 } kk_task_group_t;
 
-static bool kk_tasks_is_empty( kk_task_group_t* tg ) {
-  return (tg->tasks == NULL);
+// The index of the current thread's deque (-1 if it is not a worker).
+static kk_decl_thread kk_ssize_t kk_worker_index = -1;
+
+// How deeply the current thread runs other tasks while it waits for a promise.
+// Each level uses stack, so past a limit a waiting thread blocks instead.
+static kk_decl_thread int kk_help_depth = 0;
+#define KK_MAX_HELP_DEPTH  64
+
+static void kk_deque_push( kk_deque_t* d, kk_task_t* task ) {
+  pthread_mutex_lock(&d->lock);
+  if (d->count == d->cap) {
+    const kk_ssize_t newcap = (d->cap == 0 ? 64 : 2 * d->cap);
+    kk_task_t** items = (kk_task_t**)malloc((size_t)newcap * sizeof(kk_task_t*));
+    for (kk_ssize_t i = 0; i < d->count; i++) items[i] = d->items[(d->start + i) % d->cap];
+    free(d->items);
+    d->items = items;
+    d->start = 0;
+    d->cap = newcap;
+  }
+  d->items[(d->start + d->count) % d->cap] = task;
+  d->count++;
+  pthread_mutex_unlock(&d->lock);
+}
+
+// The newest task (by the owner).
+static kk_task_t* kk_deque_pop( kk_deque_t* d ) {
+  kk_task_t* task = NULL;
+  pthread_mutex_lock(&d->lock);
+  if (d->count > 0) {
+    d->count--;
+    task = d->items[(d->start + d->count) % d->cap];
+  }
+  pthread_mutex_unlock(&d->lock);
+  return task;
+}
+
+// The oldest task (by a thief).
+static kk_task_t* kk_deque_steal( kk_deque_t* d ) {
+  kk_task_t* task = NULL;
+  if (d->count == 0) return NULL;   // a racy check is fine: it is only a hint
+  pthread_mutex_lock(&d->lock);
+  if (d->count > 0) {
+    task = d->items[d->start];
+    d->start = (d->start + 1) % d->cap;
+    d->count--;
+  }
+  pthread_mutex_unlock(&d->lock);
+  return task;
 }
 
 static kk_task_t* kk_tasks_dequeue( kk_task_group_t* tg ) {
   kk_task_t* task = tg->tasks;
   if (task != NULL) {
     tg->tasks = task->next;
-    if (tg->tasks == NULL) { 
+    if (tg->tasks == NULL) {
       kk_assert(tg->tasks_tail == task);
-      tg->tasks_tail = NULL; 
+      tg->tasks_tail = NULL;
     }
+    task->next = NULL;
   }
-  kk_assert(task != NULL || tg->done);
   return task;
 }
 
-static void kk_tasks_enqueue_n( kk_task_group_t* tg, kk_task_t* thead, kk_task_t* ttail, kk_context_t*  ctx ) {
+static void kk_tasks_enqueue( kk_task_group_t* tg, kk_task_t* task, kk_context_t* ctx ) {
   kk_unused(ctx);
+  task->next = NULL;
   if (tg->tasks_tail != NULL) {
     kk_assert(tg->tasks_tail->next == NULL);
-    tg->tasks_tail->next = thead;
+    tg->tasks_tail->next = task;
   }
   else {
-    tg->tasks = thead;
+    tg->tasks = task;
   }
-  tg->tasks_tail = ttail;
+  tg->tasks_tail = task;
 }
 
-static void kk_tasks_enqueue( kk_task_group_t* tg, kk_task_t* task, kk_context_t* ctx ) {
-  kk_tasks_enqueue_n( tg, task, task, ctx );
+// Find a task: our own deque, then the shared queue, then other workers' deques.
+static kk_task_t* kk_task_group_find( kk_task_group_t* tg ) {
+  if (kk_atomic_load_acquire(&tg->pending) <= 0) return NULL;
+  const kk_ssize_t self = kk_worker_index;
+  kk_task_t* task = NULL;
+  if (self >= 0) task = kk_deque_pop(&tg->deques[self]);
+  if (task == NULL && tg->tasks != NULL) {
+    pthread_mutex_lock(&tg->tasks_lock);
+    task = kk_tasks_dequeue(tg);
+    pthread_mutex_unlock(&tg->tasks_lock);
+  }
+  if (task == NULL) {
+    const kk_ssize_t n = tg->thread_count;
+    const kk_ssize_t first = (self >= 0 ? self + 1 : 0);
+    for (kk_ssize_t i = 0; i < n && task == NULL; i++) {
+      const kk_ssize_t victim = (first + i) % n;
+      if (victim != self) task = kk_deque_steal(&tg->deques[victim]);
+    }
+  }
+  if (task != NULL) kk_atomic_sub_release(&tg->pending, 1);
+  return task;
 }
 
 static kk_promise_t kk_task_group_schedule( kk_task_group_t* tg, kk_function_t fun, kk_context_t* ctx ) {
   kk_promise_t p = kk_promise_alloc(ctx);
   kk_task_t* task = kk_task_alloc(fun, kk_box_dup(p,ctx), ctx);
-  pthread_mutex_lock(&tg->tasks_lock);
-  kk_tasks_enqueue(tg,task,ctx);
+  const kk_ssize_t self = kk_worker_index;
+  if (self >= 0) {
+    kk_deque_push(&tg->deques[self], task);
+    pthread_mutex_lock(&tg->tasks_lock);
+  }
+  else {
+    pthread_mutex_lock(&tg->tasks_lock);
+    kk_tasks_enqueue(tg, task, ctx);
+  }
+  kk_atomic_add_release(&tg->pending, 1);
   pthread_mutex_unlock(&tg->tasks_lock);
-  pthread_cond_signal(&tg->tasks_available);  
+  pthread_cond_signal(&tg->tasks_available);
   return p;
 }
 
-static void* kk_task_group_worker( void* vtg ) {
-  kk_task_group_t* tg = (kk_task_group_t*)vtg;
-  kk_context_t*    ctx = kk_get_context();
+// Start a worker with a large stack (16 MiB: the default of secondary
+// threads is small, 512 KiB on macOS, and tasks run nested while waiting).
+static int kk_thread_create( pthread_t* thread, void* (*action)(void*), void* arg ) {
+  #if defined(_WIN32)
+  return pthread_create(thread, NULL, action, arg);
+  #else
+  pthread_attr_t attr;
+  if (pthread_attr_init(&attr) != 0) return pthread_create(thread, NULL, action, arg);
+  pthread_attr_setstacksize(&attr, 16*1024*1024);
+  const int res = pthread_create(thread, &attr, action, arg);
+  pthread_attr_destroy(&attr);
+  return res;
+  #endif
+}
+
+typedef struct kk_worker_arg_s {
+  kk_task_group_t* tg;
+  kk_ssize_t       index;
+} kk_worker_arg_t;
+
+static void* kk_task_group_worker( void* varg ) {
+  kk_worker_arg_t* arg = (kk_worker_arg_t*)varg;
+  kk_task_group_t* tg = arg->tg;
+  kk_worker_index = arg->index;
+  free(arg);
+  kk_context_t* ctx = kk_get_context();
   ctx->task_group = tg;
-  while(true) {
-     // deqeue task
-     kk_task_t* task = NULL;
-     pthread_mutex_lock(&tg->tasks_lock);
-     while (kk_tasks_is_empty(tg) && !tg->done) {
-       pthread_cond_wait(&tg->tasks_available, &tg->tasks_lock);
-     }
-     task = kk_tasks_dequeue(tg);
-     pthread_mutex_unlock(&tg->tasks_lock);
-     if (task == NULL) {  // due to tg->done
-       break;
-     }
-     kk_task_exec(task,ctx);
-     // todo: ensure context is cleared again?
+  while (true) {
+    kk_task_t* task = kk_task_group_find(tg);
+    if (task == NULL) {
+      // sleep until a task is scheduled (or the group is done)
+      pthread_mutex_lock(&tg->tasks_lock);
+      while (kk_atomic_load_acquire(&tg->pending) <= 0 && !tg->done) {
+        pthread_cond_wait(&tg->tasks_available, &tg->tasks_lock);
+      }
+      const bool done = tg->done;
+      pthread_mutex_unlock(&tg->tasks_lock);
+      if (done) break;
+      continue;
+    }
+    kk_task_exec(task,ctx);
   }
   ctx->task_group = NULL;
+  kk_worker_index = -1;
   kk_free_context();
   return NULL;
 }
@@ -293,15 +408,24 @@ void kk_task_group_free( kk_task_group_t* tg, kk_context_t* ctx ) {
   while( task != NULL ) {
     kk_task_t* next = task->next;
     kk_task_free(task,ctx);
-    task = next;  
+    task = next;
   }
   // stop threads
-  pthread_cond_broadcast(&tg->tasks_available);  // pretend there are tasks to make the threads exit;
+  pthread_mutex_lock(&tg->tasks_lock);
+  pthread_cond_broadcast(&tg->tasks_available);  // wake up the threads so they exit
+  pthread_mutex_unlock(&tg->tasks_lock);
   for( kk_ssize_t i = 0; i < tg->thread_count; i++) {
     if (tg->threads[i] != 0) {
       pthread_join_void(tg->threads[i]);
     }
   }
+  for (kk_ssize_t i = 0; i < tg->thread_count; i++) {
+    kk_deque_t* d = &tg->deques[i];
+    for (kk_ssize_t j = 0; j < d->count; j++) kk_task_free(d->items[(d->start + j) % d->cap], ctx);
+    free(d->items);
+    pthread_mutex_destroy(&d->lock);
+  }
+  kk_free(tg->deques,ctx);
   pthread_cond_destroy(&tg->tasks_available);
   pthread_mutex_destroy(&tg->tasks_lock);
   kk_free(tg->threads,ctx);
@@ -331,10 +455,19 @@ static kk_task_group_t* kk_task_group_alloc( kk_ssize_t thread_cnt, kk_context_t
   tg->thread_count = thread_cnt;
   tg->tasks = NULL;
   tg->tasks_tail = NULL;
+  tg->deques = (kk_deque_t*)kk_zalloc( thread_cnt * kk_ssizeof(kk_deque_t), ctx );
+  if (tg->deques == NULL) goto err;
+  for (kk_ssize_t i = 0; i < thread_cnt; i++) {
+    if (pthread_mutex_init(&tg->deques[i].lock, NULL) != 0) goto err;
+  }
   if (pthread_cond_init(&tg->tasks_available, NULL) != 0) goto err;
   if (pthread_mutex_init(&tg->tasks_lock, NULL) != 0) goto err;
   for (kk_ssize_t i = 0; i < tg->thread_count; i++) {
-    if (pthread_create(&tg->threads[i], NULL, &kk_task_group_worker, tg) != 0) {
+    kk_worker_arg_t* arg = (kk_worker_arg_t*)malloc(sizeof(kk_worker_arg_t));
+    arg->tg = tg;
+    arg->index = i;
+    if (kk_thread_create(&tg->threads[i], &kk_task_group_worker, arg) != 0) {
+      free(arg);
       goto err_threads;
     };
   }
@@ -347,7 +480,8 @@ err_threads:
 err:
   if (tg != NULL) {
     if (tg->threads != NULL) { kk_free(tg->threads,ctx); }
-    kk_free(tg,ctx); 
+    if (tg->deques != NULL) { kk_free(tg->deques,ctx); }
+    kk_free(tg,ctx);
   }
   return NULL;
 }
@@ -389,6 +523,9 @@ static kk_promise_t kk_promise_alloc(kk_context_t* ctx) {
   promise_t* p = (promise_t*)kk_zalloc(kk_ssizeof(promise_t),ctx);
   if (p == NULL) goto err;
   p->result = kk_box_any(ctx);
+  // the placeholder is the creating thread's `kk_box_any`, but another thread
+  // drops it when it sets the result, so its reference count must be atomic
+  kk_box_mark_shared(p->result,ctx);
   if (pthread_mutex_init(&p->lock, NULL) != 0) goto err;
   if (pthread_cond_init(&p->available, NULL) != 0) goto err;
   pr = kk_cptr_raw_box( &kk_promise_free, p, ctx );
@@ -431,16 +568,13 @@ kk_box_t kk_promise_get( kk_promise_t pr, kk_context_t* ctx ) {
       pthread_mutex_unlock(&p->lock);
       // try to get a task
       kk_task_group_t* tg = ctx->task_group;
-      kk_task_t* task = NULL;
-      pthread_mutex_lock(&tg->tasks_lock);
-      if (!kk_tasks_is_empty(tg) && !tg->done) {
-        task = kk_tasks_dequeue(tg);
-      }
-      pthread_mutex_unlock(&tg->tasks_lock);
+      kk_task_t* task = (tg->done || kk_help_depth >= KK_MAX_HELP_DEPTH ? NULL : kk_task_group_find(tg));
       // run task
-      if (task != NULL) { 
+      if (task != NULL) {
+        kk_help_depth++;
         kk_task_exec(task, ctx);
-        pthread_mutex_lock(&p->lock);        
+        kk_help_depth--;
+        pthread_mutex_lock(&p->lock);
       }
       else {        
         pthread_mutex_lock(&p->lock);
@@ -550,16 +684,13 @@ kk_box_t kk_lvar_get( kk_lvar_t lvar, kk_box_t bot, kk_function_t is_gte, kk_con
       pthread_mutex_unlock(&lv->lock);
       // try to get a task
       kk_task_group_t* tg = ctx->task_group;
-      kk_task_t* task = NULL;
-      pthread_mutex_lock(&tg->tasks_lock);
-      if (!kk_tasks_is_empty(tg) && !tg->done) {
-        task = kk_tasks_dequeue(tg);
-      }
-      pthread_mutex_unlock(&tg->tasks_lock);
+      kk_task_t* task = (tg->done || kk_help_depth >= KK_MAX_HELP_DEPTH ? NULL : kk_task_group_find(tg));
       // run task
-      if (task != NULL) { 
+      if (task != NULL) {
+        kk_help_depth++;
         kk_task_exec(task, ctx);
-        pthread_mutex_lock(&lv->lock);        
+        kk_help_depth--;
+        pthread_mutex_lock(&lv->lock);
       }
       else {
         pthread_mutex_lock(&lv->lock);
