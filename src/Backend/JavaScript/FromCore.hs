@@ -960,9 +960,17 @@ genExprExternalPrim tname format argDocs0
     ppExternalF name k@('#':y:xs)  args
      = if  y `elem` ['1'..'9']
         then (let n = length args
-                  i = fromEnum y - fromEnum '1'
+                  -- the longest run of digits that is still an argument index (so `#10` is
+                  -- the tenth argument, and not the first one followed by a `0`)
+                  digits = takeWhile isDigit (y:xs)
+                  cands  = [(d, read d :: Int) | len <- reverse [1..length digits], let d = take len digits]
+                  (ds,j) = case [c | c@(_,v) <- cands, v >= 1 && v <= n] of
+                             (c:_) -> c
+                             []    -> ([y], fromEnum y - fromEnum '0')
+                  i      = j - 1
+                  rest   = drop (length ds - 1) xs
               in assertion ("illegal index in external: " ++ show tname ++ "("++k++"): index: " ++ show i) (i < n) $
-                 (args!!i) <.> ppExternalF name xs args)
+                 (args!!i) <.> ppExternalF name rest args)
         else char y <.> ppExternalF name xs args
     ppExternalF name (x:xs)  args
      = char x <.> ppExternalF name xs args
