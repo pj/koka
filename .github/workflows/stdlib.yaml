@@ -85,20 +85,11 @@ jobs:
     name: Test (windows-latest)
     runs-on: windows-latest
     timeout-minutes: 180
-    env:
-      VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
     steps:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: true
-
-      - name: Setup vcpkg cache
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0
-        with:
-          script: |
-            core.exportVariable('ACTIONS_CACHE_URL', process.env.ACTIONS_CACHE_URL || '');
-            core.exportVariable('ACTIONS_RUNTIME_TOKEN', process.env.ACTIONS_RUNTIME_TOKEN || '');
 
       - name: Set up Visual Studio shell
         uses: egor-tensin/vs-shell@54e4148eac794e4580591c2e0b7750f14b7891fc # v2.2
@@ -107,6 +98,13 @@ jobs:
 
       - name: Set VCPKG_ROOT
         run: echo "VCPKG_ROOT=$env:VCPKG_INSTALLATION_ROOT" >> $env:GITHUB_ENV
+
+      # install the C libraries up front (koka would otherwise install them while
+      # tests run, and vcpkg's messages would end up in the test output)
+      - name: Install C libraries
+        run: |
+          & "$env:VCPKG_ROOT\vcpkg" install --triplet x64-windows-static-md libuv pcre2 zlib sqlite3 brotli zstd mbedtls
+          Get-ChildItem "$env:VCPKG_ROOT\installed\x64-windows-static-md\lib" | Select-Object -ExpandProperty Name
 
       - name: Build compiler
         uses: freckle/stack-action@c5b62aa4c722658775d1c53d501a21bca1d28c5a #v5.7.29
