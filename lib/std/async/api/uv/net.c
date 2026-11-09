@@ -709,8 +709,26 @@ kk_std_core_exn__error kk_udp_connect( kk_box_t bu, kk_string_t ip, int32_t port
   int err;
   if (kk_string_len_borrow(ip, ctx) == 0) {
     kk_string_drop(ip, ctx);
+    struct sockaddr_storage local;
+    int locallen = sizeof(local);
+    const bool bound = (uv_udp_getsockname(&u->udp, (struct sockaddr*)&local, &locallen) == 0);
     err = uv_udp_connect(&u->udp, NULL);
     if (err == UV_ENOTCONN) err = 0;
+    #if !defined(_WIN32)
+    // Linux drops a port that was chosen by the system (bound to port 0) on a
+    // disconnect: bind the socket to the same address again
+    if (err == 0 && bound) {
+      struct sockaddr_storage now;
+      int nowlen = sizeof(now);
+      const bool lost = (uv_udp_getsockname(&u->udp, (struct sockaddr*)&now, &nowlen) != 0 ||
+                         (now.ss_family == AF_INET  && ((struct sockaddr_in*)&now)->sin_port == 0) ||
+                         (now.ss_family == AF_INET6 && ((struct sockaddr_in6*)&now)->sin6_port == 0));
+      uv_os_fd_t fd;
+      if (lost && uv_fileno((const uv_handle_t*)&u->udp, &fd) == 0) {
+        if (bind((int)fd, (const struct sockaddr*)&local, (socklen_t)locallen) != 0) err = uv_translate_sys_error(errno);
+      }
+    }
+    #endif
   }
   else {
     struct sockaddr_storage addr;

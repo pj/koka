@@ -39,8 +39,9 @@ jobs:
       - name: Install nix
         uses: cachix/install-nix-action@v31
 
-      - name: Cache cabal store and build
-        uses: actions/cache@v4
+      # restored and saved separately, so the cache is also saved when tests fail
+      - name: Restore cabal store and build
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cabal/packages
@@ -57,11 +58,22 @@ jobs:
           nix develop -c cabal update
           nix develop -c cabal build exe:koka koka-test
 
+      - name: Save cabal store and build
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cabal/packages
+            ~/.cabal/store
+            ~/.local/state/cabal
+            dist-newstyle
+          key: cabal-${{ matrix.os }}-${{ hashFiles('koka.cabal', 'package.yaml', 'cabal.project*', 'flake.lock') }}-${{ github.sha }}
+
       - name: Test suite (C)
         run: nix develop -c cabal run koka-test
 
       # Known differences on JS: float formatting (ddouble1-3, double2, double4),
-      # std/os/task (C only), and deep recursion beyond the stack (physicists-stack).
+      # threads (task-publish, task-shared, sync-condition: C only), and deep
+      # recursion beyond the stack (physicists-stack).
       - name: Test suite (JavaScript)
         continue-on-error: true
         run: nix develop -c cabal run koka-test -- --target-js
