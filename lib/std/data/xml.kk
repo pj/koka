@@ -1,0 +1,370 @@
+/*---------------------------------------------------------------------------
+  Copyright 2026, Koka contributors.
+
+  This is free software; you can redistribute it and/or modify it under the
+  terms of the Apache License, Version 2.0. A copy of the License can be
+  found in the LICENSE file at the root of this distribution.
+---------------------------------------------------------------------------*/
+
+/* XML: a pull parser and a small document model.
+
+   ```
+   import std/data/xml
+
+   fun main()
+     val doc = parse-xml(r#"<feed><entry id="1"><title>Koka &amp; effects</title></entry><entry id="2"/></feed>"#)
+     doc.elements("entry").foreach fn(e)
+       println(e.attr("id").default("") ++ ": " ++ e.child("title").map(text-content).default("-"))
+     println(doc.stringify)
+   ```
+
+   `xml-events` reads a document as a lazy sequence of events (start and end
+   tags, text, ...), for documents that are too large to hold at once, and
+   `parse-xml` builds the tree. Both check that the document is well formed
+   (matching tags, one root element, unique attributes, and only the
+   predefined entities `&lt; &gt; &amp; &quot; &apos;` and character
+   references). A DOCTYPE is skipped; its entity definitions are not used.
+   Namespaces are not interpreted: a name like `atom:link` is kept as it is.
+*/
+module std/data/xml
+
+import std/core/undiv
+import std/core/seq
+import std/text/builder
+
+// A node of a document.
+pub type xml
+  // An element with its attributes and children.
+  Element( name : string, attrs : list<(string, string)>, children : list<xml> )
+  // Text (with entities replaced).
+  Text( text : string )
+  // A `<![CDATA[...]]>` section.
+  CData( text : string )
+  // A `<!-- comment -->`.
+  Comment( text : string )
+  // A processing instruction `<?target data?>`.
+  Instruction( target : string, data : string )
+
+// An event of the pull parser.
+pub type xml-event
+  Start-element( name : string, attrs : list<(string, string)> )
+  End-element( name : string )
+  Text-event( text : string )
+  CData-event( text : string )
+  Comment-event( text : string )
+  Instruction-event( target : string, data : string )
+
+// ----------------------------------------------------------------------------
+// Access
+// ----------------------------------------------------------------------------
+
+// The value of attribute `key` of an element.
+pub fun attr( x : xml, key : string ) : maybe<string>
+  match x
+    Element(_, attrs, _) -> attrs.lookup(fn(k) k == key)
+    _ -> Nothing
+
+// The child elements named `name` (all child elements for `"*"`).
+pub fun elements( x : xml, name : string = "*" ) : list<xml>
+  match x
+    Element(_, _, cs) -> cs.filter(fn(c) c.is-named(name))
+    _ -> []
+
+// The first child element named `name`.
+pub fun child( x : xml, name : string ) : maybe<xml>
+  x.elements(name).head
+
+fun is-named( x : xml, name : string ) : bool
+  match x
+    Element(n, _, _) -> name == "*" || n == name
+    _ -> False
+
+// All elements named `name` in the tree, in document order (including `x` itself).
+pub fun find-all( x : xml, name : string ) : list<xml>
+  match x
+    Element(_, _, cs) -> (if x.is-named(name) then [x] else []) ++ cs.flatmap(fn(c) pretend-decreasing(c).find-all(name))
+    _ -> []
+
+// The text of a node and all its descendants (text and CDATA, without comments).
+pub fun text-content( x : xml ) : string
+  match x
+    Element(_, _, cs) -> cs.map(fn(c) pretend-decreasing(c).text-content).join
+    Text(s) -> s
+    CData(s) -> s
+    _ -> ""
+
+// The name of an element (`""` for other nodes).
+pub fun tag( x : xml ) : string
+  match x
+    Element(n, _, _) -> n
+    _ -> ""
+
+// ----------------------------------------------------------------------------
+// Writing
+// ----------------------------------------------------------------------------
+
+// Escape text for XML content or attribute values.
+pub fun escape( s : string ) : string
+  s.list.map(fn(c) match c { '<' -> "&lt;"; '>' -> "&gt;"; '&' -> "&amp;"; '"' -> "&quot;"; _ -> c.string }).join
+
+// Write a node as XML text. With `indent` > 0, elements that contain only
+// elements are written over several indented lines.
+pub fun stringify( x : xml, indent : int = 0 ) : string
+  pretend-no-div { build { emit-xml(x, indent, 0) } }
+
+pub fun show( x : xml ) : string
+  x.stringify
+
+fun emit-xml( x : xml, indent : int, level : int ) : <emit,div> ()
+  match x
+    Text(s) -> emit(s.escape)
+    CData(s) -> emit("<![CDATA[" ++ s ++ "]]>")
+    Comment(s) -> emit("<!--" ++ s ++ "-->")
+    Instruction(t, d) -> emit("<?" ++ t ++ (if d.is-empty then "" else " " ++ d) ++ "?>")
+    Element(n, attrs, cs) ->
+      emit("<" ++ n ++ attrs.map(fn((k, v)) " " ++ k ++ "=\"" ++ v.escape ++ "\"").join)
+      if cs.is-nil then emit("/>")
+      else
+        emit(">")
+        val block = indent > 0 && cs.all(fn(c) !c.is-text-like)
+        cs.foreach fn(c)
+          if block then emit("\n" ++ " ".repeat(indent * (level + 1)))
+          emit-xml(c, indent, level + 1)
+        if block then emit("\n" ++ " ".repeat(indent * level))
+        emit("</" ++ n ++ ">")
+
+fun is-text-like( x : xml ) : bool
+  match x
+    Text(_) -> True
+    CData(_) -> True
+    _ -> False
+
+// ----------------------------------------------------------------------------
+// Pull parser
+// ----------------------------------------------------------------------------
+
+fun parse-error( src : list<char>, rest : list<char>, msg : string ) : exn a
+  val consumed = src.take(src.length - rest.length)
+  val line = consumed.filter(fn(c) c == '\n').length + 1
+  val col = consumed.reverse.take-while(fn(c) c != '\n').length + 1
+  throw("xml parse error at line " ++ line.show ++ ", column " ++ col.show ++ ": " ++ msg)
+
+// The parser state: the rest of the input, the open elements (innermost
+// first), and whether the root element was seen.
+struct pstate
+  rest : list<char>
+  open : list<string>
+  seen-root : bool
+
+// The events of a document, as a lazy sequence. Errors are raised when the
+// part of the document that has them is read.
+pub fun xml-events( s : string ) : seq<<exn|e>,xml-event>
+  val src = s.list
+  seq/suspend(fn() event-step(src, Pstate(src.skip-prolog, [], False)))
+
+fun event-step( src : list<char>, st : pstate ) : <exn,div|e> step<<exn|e>,xml-event>
+  match next-event(src, st)
+    Nothing -> Done
+    Just((ev, st1)) -> Yield(ev, seq/suspend(fn() event-step(src, pretend-decreasing(st1))))
+
+fun is-ws( c : char ) : bool
+  c == ' ' || c == '\t' || c == '\n' || c == '\r'
+
+fun skip-ws( cs : list<char> ) : list<char>
+  match cs
+    Cons(c, rest) | c.is-ws -> rest.skip-ws
+    _ -> cs
+
+fun starts( cs : list<char>, start : string ) : bool
+  cs.take(start.count).string == start
+
+// The text up to `stop`, and the rest after it.
+fun until( src : list<char>, cs : list<char>, stop : string, what : string ) : exn (string, list<char>)
+  fun go( xs : list<char>, acc : list<char> ) : exn (string, list<char>)
+    if xs.starts(stop) then (acc.reverse.string, xs.drop(stop.count))
+    else match xs
+      Cons(c, rest) -> go(rest, Cons(c, acc))
+      Nil -> src.parse-error(cs, "unterminated " ++ what)
+  go(cs, [])
+
+// Skip the XML declaration and a DOCTYPE (with an internal subset) at the start.
+fun skip-prolog( cs : list<char> ) : list<char>
+  val cs1 = cs.drop-bom
+  val cs2 = if cs1.starts("<?xml") && cs1.drop(5).head.map(is-ws).default(False) then cs1.skip-past("?>") else cs1
+  cs2
+
+fun drop-bom( cs : list<char> ) : list<char>
+  match cs
+    Cons(c, rest) | c.int == 0xFEFF -> rest
+    _ -> cs
+
+fun skip-past( cs : list<char>, stop : string ) : list<char>
+  if cs.starts(stop) then cs.drop(stop.count)
+  else match cs
+    Cons(_, rest) -> rest.skip-past(stop)
+    Nil -> Nil
+
+// Skip `<!DOCTYPE ...>` with a possible `[...]` internal subset.
+fun skip-doctype( src : list<char>, cs : list<char> ) : exn list<char>
+  fun go( xs : list<char>, depth : int ) : exn list<char>
+    match xs
+      Cons('[', rest) -> go(rest, depth + 1)
+      Cons(']', rest) -> go(rest, depth - 1)
+      Cons('>', rest) | depth == 0 -> rest
+      Cons('"', rest) -> go(pretend-decreasing(rest.skip-past("\"")), depth)
+      Cons('\'', rest) -> go(pretend-decreasing(rest.skip-past("'")), depth)
+      Cons(_, rest) -> go(rest, depth)
+      Nil -> src.parse-error(cs, "unterminated DOCTYPE")
+  go(cs, 0)
+
+fun is-name-start( c : char ) : bool
+  c.is-alpha || c == '_' || c == ':' || c.int >= 0x80
+
+fun is-name-char( c : char ) : bool
+  c.is-name-start || c.is-digit || c == '-' || c == '.'
+
+fun parse-name( src : list<char>, cs : list<char> ) : exn (string, list<char>)
+  match cs
+    Cons(c, _) | c.is-name-start ->
+      val n = cs.take-while(is-name-char)
+      (n.string, cs.drop(n.length))
+    _ -> src.parse-error(cs, "expected a name")
+
+// Replace entity and character references.
+fun unescape( src : list<char>, at : list<char>, s : string ) : exn string
+  fun go( xs : list<char>, acc : list<char> ) : exn list<char>
+    match xs
+      Nil -> acc.reverse
+      Cons('&', rest) ->
+        val name = rest.take-while(fn(c) c != ';' && !c.is-ws && c != '&' && c != '<')
+        val after = rest.drop(name.length)
+        match after
+          Cons(';', rest2) ->
+            val c = match name.string
+              "lt" -> '<'
+              "gt" -> '>'
+              "amp" -> '&'
+              "quot" -> '"'
+              "apos" -> '\''
+              n ->
+                val code = if n.starts-with("#x").is-just then n.slice.drop(2).string.parse-int(hex = True)
+                           elif n.starts-with("#").is-just then n.slice.drop(1).string.parse-int
+                           else Nothing
+                match code
+                  Just(i) | (i == 0x9 || i == 0xA || i == 0xD || (i >= 0x20 && i < 0xD800) || (i > 0xDFFF && i <= 0x10FFFF)) && i != 0xFFFE && i != 0xFFFF -> i.char
+                  _ -> src.parse-error(at, "unknown entity &" ++ n ++ ";")
+            go(pretend-decreasing(rest2), Cons(c, acc))
+          _ -> src.parse-error(at, "'&' must start an entity like &amp;")
+      Cons(c, rest) -> go(rest, Cons(c, acc))
+  go(s.list, []).string
+
+fun parse-attrs( src : list<char>, cs : list<char>, acc : list<(string, string)> ) : exn (list<(string, string)>, list<char>)
+  val cs1 = cs.skip-ws
+  match cs1
+    Cons(c, _) | c.is-name-start ->
+      if !cs.head.map(is-ws).default(False) then src.parse-error(cs, "expected a space before an attribute")
+      val (name, rest) = src.parse-name(cs1)
+      match rest.skip-ws
+        Cons('=', rest1) -> match rest1.skip-ws
+          Cons(q, rest2) | q == '"' || q == '\'' ->
+            val (rawtext, rest3) = src.until(rest2, q.string, "attribute value")
+            if rawtext.list.any(fn(x) x == '<') then src.parse-error(rest2, "'<' in an attribute value")
+            if acc.any(fn((k, _)) k == name) then src.parse-error(cs1, "duplicate attribute " ++ name)
+            // whitespace characters in attribute values are normalized to spaces
+            val value = src.unescape(rest2, rawtext.list.map(fn(x) if x == '\n' || x == '\t' || x == '\r' then ' ' else x).string)
+            src.parse-attrs(pretend-decreasing(rest3), Cons((name, value), acc))
+          r -> src.parse-error(r, "expected a quoted attribute value")
+        r -> src.parse-error(r, "expected '=' after the attribute name")
+    _ -> (acc.reverse, cs1)
+
+fun next-event( src : list<char>, st : pstate ) : <exn,div> maybe<(xml-event, pstate)>
+  val cs = st.rest
+  match cs
+    Nil ->
+      match st.open
+        Cons(n, _) -> src.parse-error(cs, "unclosed element <" ++ n ++ ">")
+        Nil -> if st.seen-root then Nothing else src.parse-error(cs, "no root element")
+    Cons('<', rest) ->
+      if rest.starts("!--") then
+        val (text, rest1) = src.until(rest.drop(3), "-->", "comment")
+        if text.contains("--") then src.parse-error(rest, "'--' inside a comment")
+        Just((Comment-event(text), st(rest = rest1)))
+      elif rest.starts("![CDATA[") then
+        if st.open.is-nil then src.parse-error(cs, "CDATA outside the root element")
+        val (text, rest1) = src.until(rest.drop(8), "]]>", "CDATA section")
+        Just((CData-event(text), st(rest = rest1)))
+      elif rest.starts("!DOCTYPE") then
+        if st.seen-root || !st.open.is-nil then src.parse-error(cs, "DOCTYPE after the root element")
+        next-event(src, st(rest = src.skip-doctype(rest.drop(8))))
+      elif rest.starts("?") then
+        val (target, rest1) = src.parse-name(rest.drop(1))
+        if target.to-lower == "xml" then src.parse-error(cs, "an XML declaration is only allowed at the start")
+        val (data, rest2) = src.until(rest1, "?>", "processing instruction")
+        Just((Instruction-event(target, data.trim-left), st(rest = rest2)))
+      elif rest.starts("/") then
+        val (name, rest1) = src.parse-name(rest.drop(1))
+        match rest1.skip-ws
+          Cons('>', rest2) -> match st.open
+            Cons(n, outer) ->
+              if n != name then src.parse-error(rest, "</" ++ name ++ "> does not match <" ++ n ++ ">")
+              Just((End-element(name), Pstate(rest2, outer, True)))
+            Nil -> src.parse-error(rest, "unexpected </" ++ name ++ ">")
+          r -> src.parse-error(r, "expected '>'")
+      else
+        if st.open.is-nil && st.seen-root then src.parse-error(cs, "a second root element")
+        val (name, rest1) = src.parse-name(rest)
+        val (attrs, rest2) = src.parse-attrs(rest1, [])
+        match rest2
+          Cons('/', Cons('>', rest3)) ->
+            // an empty element: a start event now, and its end event next
+            Just((Start-element(name, attrs), Pstate(['<', '/'] ++ name.list ++ ['>'] ++ rest3, Cons(name, st.open), st.seen-root)))
+          Cons('>', rest3) -> Just((Start-element(name, attrs), Pstate(rest3, Cons(name, st.open), st.seen-root)))
+          r -> src.parse-error(r, "expected '>' or '/>'")
+    _ ->
+      val rawtext = cs.take-while(fn(c) c != '<')
+      val rest = cs.drop(rawtext.length)
+      if st.open.is-nil then
+        if rawtext.all(is-ws) then next-event(src, st(rest = rest))
+        else src.parse-error(cs, "text outside the root element")
+      else
+        if rawtext.string.contains("]]>") then src.parse-error(cs, "']]>' in text")
+        Just((Text-event(src.unescape(cs, rawtext.string)), st(rest = rest)))
+
+// ----------------------------------------------------------------------------
+// Building the tree
+// ----------------------------------------------------------------------------
+
+// Parse a document and return its root element (comments and processing
+// instructions outside the root are dropped). Raises an exception with the
+// line and column for a document that is not well formed.
+pub fun parse-xml( s : string ) : exn xml
+  val evs = pretend-no-div { xml-events(s).list }
+  match build-nodes(evs, [])
+    (roots, _) -> match roots.filter(fn(x) x.is-named("*"))
+      [root] -> root
+      _ -> throw("xml: no root element")
+
+// Parse a document, returning `Nothing` if it is not well formed.
+pub fun try-parse-xml( s : string ) : maybe<xml>
+  catch(fn(_) Nothing, { Just(parse-xml(s)) })
+
+// Build the nodes up to the end of the current element; returns them and the remaining events.
+fun build-nodes( evs : list<xml-event>, acc : list<xml> ) : (list<xml>, list<xml-event>)
+  match evs
+    Nil -> (acc.reverse, [])
+    Cons(ev, rest) -> match ev
+      End-element(_) -> (acc.reverse, rest)
+      Start-element(n, attrs) ->
+        val (cs, rest1) = build-nodes(rest, [])
+        build-nodes(pretend-decreasing(rest1), Cons(Element(n, attrs, cs.merge-text), acc))
+      Text-event(t) -> build-nodes(rest, Cons(Text(t), acc))
+      CData-event(t) -> build-nodes(rest, Cons(CData(t), acc))
+      Comment-event(t) -> build-nodes(rest, Cons(Comment(t), acc))
+      Instruction-event(t, d) -> build-nodes(rest, Cons(Instruction(t, d), acc))
+
+// Merge adjacent text nodes.
+fun merge-text( xs : list<xml> ) : list<xml>
+  match xs
+    Cons(Text(a), Cons(Text(b), rest)) -> pretend-decreasing(Cons(Text(a ++ b), rest)).merge-text
+    Cons(x, rest) -> Cons(x, rest.merge-text)
+    Nil -> Nil

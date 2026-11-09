@@ -1,0 +1,40 @@
+1: Koka & effects
+2: -
+<feed><entry id="1"><title>Koka &amp; effects</title></entry><entry id="2"/></feed>
+("note",Just("n1"),Just("en"),Nothing)
+Just("Jani \u263A A<>\"\'")
+Just("Don\'t <forget> & remember me")
+["deep","to","from","body","empty","nested"]
+67
+<note id="n1" lang="en">
+  <to>Tove</to>
+  <from>Jani ☺ A&lt;&gt;&quot;'</from>
+  <body><![CDATA[Don't <forget> & remember]]> me</body>
+  <?render fast?>
+  <empty/>
+  <nested>
+    <a>
+      <b>deep</b>
+    </a>
+  </nested>
+</note>
+True
+<p title="a &quot;quoted&quot; &lt;value&gt; &amp; more">1 &lt; 2 &amp; 3 &gt; 2</p>
+<log> <line> one </line> <line>
+True
+6
+mismatched: error: xml parse error at line 1, column 8: </a> does not match <b>
+unclosed: error: xml parse error at line 1, column 11: unclosed element <a>
+two roots: error: xml parse error at line 1, column 5: a second root element
+duplicate attribute: error: xml parse error at line 1, column 10: duplicate attribute x
+unknown entity: error: xml parse error at line 1, column 4: unknown entity &nbsp;
+bare ampersand: error: xml parse error at line 1, column 4: '&' must start an entity like &amp;
+text outside: error: xml parse error at line 1, column 1: text outside the root element
+empty: error: xml parse error at line 1, column 3: no root element
+lt in attribute: error: xml parse error at line 1, column 7: '<' in an attribute value
+unquoted attribute: error: xml parse error at line 1, column 6: expected a quoted attribute value
+bad name: error: xml parse error at line 1, column 2: expected a name
+comment dashes: error: xml parse error at line 1, column 5: '--' inside a comment
+multi-line error: error: xml parse error at line 3, column 4: </c> does not match <b>
+attribute whitespace: <a x="one two"/>
+bom and decl: <a/>
