@@ -32,6 +32,7 @@ pub import std/os/io
 pub import std/os/sync
 pub import std/io/stream
 pub import std/compress
+pub import std/compress/zip
 
 pub import std/text/parse
 pub import std/text/regex

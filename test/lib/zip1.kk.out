@@ -1,0 +1,16 @@
+True
+("hello.txt",1600,False,True,"0x1A4")
+("docs/",0,True,False,"0x1ED")
+("docs/raw.bin",256,False,False,"0x1A4")
+("\xFCn\xEFcode.txt",2,False,False,"0x1A4")
+("run.sh",7,False,False,"0x1ED")
+Just(True)
+22
+True
+True
+True
+True
+0
+("a.txt",900,False)
+("sub/",0,True)
+("sub/b.txt",6,False)
