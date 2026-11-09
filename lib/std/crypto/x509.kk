@@ -31,6 +31,15 @@ module std/crypto/x509
 import std/data/der
 import std/num/int32
 
+// (all three, in the order of std/async/api/uv/tls: with static linking,
+// libraries are listed in the order modules first name them, and GNU ld
+// needs mbedcrypto after the others)
+extern import
+  c[host=libc] { vcpkg="mbedtls"; library="mbedtls" }
+
+extern import
+  c[host=libc] { vcpkg="mbedtls"; library="mbedx509" }
+
 extern import
   c[host=libc] { vcpkg="mbedtls"; library="mbedcrypto" }
 
