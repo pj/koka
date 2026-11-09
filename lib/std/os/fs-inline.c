@@ -8,13 +8,20 @@
 
 /*---------------------------------------------------------------------------
   Binary files, metadata, and file system manipulation.
-  POSIX implementation; on Windows most operations return ENOSYS.
+  POSIX implementation, with Windows (MSVCRT) equivalents; on Windows
+  `set-permissions` can only make files read-only or writable, and there
+  are no symbolic links.
 ---------------------------------------------------------------------------*/
 #include <errno.h>
 #include <stdio.h>
 #include <sys/stat.h>
 #if !defined(_WIN32)
 #include <unistd.h>
+#include <stdlib.h>
+#else
+#include <io.h>
+#include <direct.h>
+#include <fcntl.h>
 #include <stdlib.h>
 #endif
 
@@ -122,7 +129,9 @@ static kk_std_core_exn__error kk_os_rename_prim( kk_string_t from, kk_string_t t
 static kk_std_core_exn__error kk_os_chmod_prim( kk_string_t path, kk_integer_t mode, kk_context_t* ctx ) {
   const int m = kk_integer_clamp32(mode,ctx);
   #if defined(_WIN32)
-  const int err = ENOSYS;
+  // only the owner's write permission can be set (as the read-only attribute)
+  const int res = _chmod(kk_string_cbuf_borrow(path,NULL,ctx), ((m & 0200) != 0 ? (_S_IREAD | _S_IWRITE) : _S_IREAD));
+  const int err = (res != 0 ? errno : 0);
   #else
   const int res = chmod(kk_string_cbuf_borrow(path,NULL,ctx), (mode_t)m);
   const int err = (res != 0 ? errno : 0);
@@ -131,11 +140,42 @@ static kk_std_core_exn__error kk_os_chmod_prim( kk_string_t path, kk_integer_t m
   return kk_os_unit_result(err,ctx);
 }
 
+#if defined(_WIN32)
+// Create a file (or directory) named `<prefix>` + 6 random characters that did not exist yet.
+static kk_std_core_exn__error kk_os_win_unique( kk_string_t prefix, bool is_dir, kk_context_t* ctx ) {
+  static const char letters[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+  kk_ssize_t plen;
+  const char* p = kk_string_cbuf_borrow(prefix,&plen,ctx);
+  char* name = (char*)kk_malloc(plen + 7,ctx);
+  memcpy(name, p, (size_t)plen);
+  name[plen + 6] = 0;
+  kk_string_drop(prefix,ctx);
+  int err = EEXIST;
+  for (int attempt = 0; attempt < 100 && err == EEXIST; attempt++) {
+    for (int i = 0; i < 6; i++) name[plen + i] = letters[kk_srandom_uint32(ctx) % 36];
+    if (is_dir) {
+      err = (_mkdir(name) != 0 ? errno : 0);
+    }
+    else {
+      const int fd = _open(name, _O_CREAT | _O_EXCL | _O_RDWR | _O_BINARY, _S_IREAD | _S_IWRITE);
+      err = (fd < 0 ? errno : 0);
+      if (fd >= 0) _close(fd);
+    }
+  }
+  if (err != 0) {
+    kk_free(name,ctx);
+    return kk_error_from_errno(err,ctx);
+  }
+  kk_string_t s = kk_string_alloc_from_utf8(name,ctx);
+  kk_free(name,ctx);
+  return kk_error_ok(kk_string_box(s),ctx);
+}
+#endif
+
 // Create a unique temporary file `<dir>/<prefix>XXXXXX` and return its path
 static kk_std_core_exn__error kk_os_temp_file_prim( kk_string_t prefix, kk_context_t* ctx ) {
   #if defined(_WIN32)
-  kk_string_drop(prefix,ctx);
-  return kk_error_from_errno(ENOSYS,ctx);
+  return kk_os_win_unique(prefix, false, ctx);
   #else
   kk_ssize_t plen;
   const char* p = kk_string_cbuf_borrow(prefix,&plen,ctx);
@@ -197,8 +237,7 @@ static kk_std_core_exn__error kk_os_set_cwd_prim( kk_string_t path, kk_context_t
 // Create a unique temporary directory `<prefix>XXXXXX` and return its path
 static kk_std_core_exn__error kk_os_temp_dir_prim( kk_string_t prefix, kk_context_t* ctx ) {
   #if defined(_WIN32)
-  kk_string_drop(prefix,ctx);
-  return kk_error_from_errno(ENOSYS,ctx);
+  return kk_os_win_unique(prefix, true, ctx);
   #else
   kk_ssize_t plen;
   const char* p = kk_string_cbuf_borrow(prefix,&plen,ctx);
@@ -222,16 +261,30 @@ static kk_std_core_exn__error kk_os_temp_dir_prim( kk_string_t prefix, kk_contex
   descriptor to -1 (so closing twice is harmless), and a handle that is no
   longer referenced is closed by its finalizer.
 ---------------------------------------------------------------------------*/
-#if !defined(_WIN32)
+#if defined(_WIN32)
+// Windows (MSVCRT): binary mode, and handles are not inherited by child processes
+#define kk_fd_open(path,flags)   _open(path, (flags) | _O_BINARY | _O_NOINHERIT, _S_IREAD | _S_IWRITE)
+#define kk_fd_read(fd,buf,n)     _read(fd, buf, (unsigned int)(n))
+#define kk_fd_write(fd,buf,n)    _write(fd, buf, (unsigned int)(n))
+#define kk_fd_close(fd)          _close(fd)
+typedef int kk_fd_ssize_t;
+#else
 #include <fcntl.h>
+#ifdef O_CLOEXEC
+#define kk_fd_open(path,flags)   open(path, (flags) | O_CLOEXEC, 0666)
+#else
+#define kk_fd_open(path,flags)   open(path, flags, 0666)
+#endif
+#define kk_fd_read(fd,buf,n)     read(fd, buf, (size_t)(n))
+#define kk_fd_write(fd,buf,n)    write(fd, buf, (size_t)(n))
+#define kk_fd_close(fd)          close(fd)
+typedef ssize_t kk_fd_ssize_t;
 #endif
 
 static void kk_os_fd_free( void* p, kk_block_t* block, kk_context_t* ctx ) {
   kk_unused(block);
   int* pfd = (int*)p;
-  #if !defined(_WIN32)
-  if (*pfd >= 0) close(*pfd);
-  #endif
+  if (*pfd >= 0) kk_fd_close(*pfd);
   kk_free(pfd,ctx);
 }
 
@@ -243,23 +296,15 @@ static int kk_os_fd_of( kk_box_t h, kk_context_t* ctx ) {
 // mode 0: read, 1: write (create and truncate), 2: append (create)
 static kk_std_core_exn__error kk_os_fd_open( kk_string_t path, kk_integer_t mode, kk_context_t* ctx ) {
   const int m = kk_integer_clamp32(mode,ctx);
-  #if defined(_WIN32)
-  kk_string_drop(path,ctx);
-  return kk_error_from_errno(ENOSYS,ctx);
-  #else
-  int flags = (m == 0 ? O_RDONLY : (m == 1 ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND)));
-  #ifdef O_CLOEXEC
-  flags |= O_CLOEXEC;
-  #endif
+  const int flags = (m == 0 ? O_RDONLY : (m == 1 ? (O_WRONLY | O_CREAT | O_TRUNC) : (O_WRONLY | O_CREAT | O_APPEND)));
   int fd;
-  do { fd = open(kk_string_cbuf_borrow(path,NULL,ctx), flags, 0666); } while (fd < 0 && errno == EINTR);
+  do { fd = kk_fd_open(kk_string_cbuf_borrow(path,NULL,ctx), flags); } while (fd < 0 && errno == EINTR);
   const int err = errno;
   kk_string_drop(path,ctx);
   if (fd < 0) return kk_error_from_errno(err,ctx);
   int* pfd = (int*)kk_malloc(sizeof(int),ctx);
   *pfd = fd;
   return kk_error_ok(kk_cptr_raw_box(&kk_os_fd_free, pfd, ctx),ctx);
-  #endif
 }
 
 // Read at most `max` bytes; an empty result means the end of the file.
@@ -268,14 +313,11 @@ static kk_std_core_exn__error kk_os_fd_read( kk_box_t h, kk_integer_t max, kk_co
   kk_box_drop(h,ctx);
   kk_ssize_t n = kk_integer_clamp_ssize_t(max,ctx);
   if (n <= 0) n = 64*1024;
-  #if defined(_WIN32)
-  return kk_error_from_errno(ENOSYS,ctx);
-  #else
   if (fd < 0) return kk_error_from_errno(EBADF,ctx);
   uint8_t* buf;
   kk_bytes_t b = kk_bytes_alloc_buf(n, &buf, ctx);
-  ssize_t res;
-  do { res = read(fd, buf, (size_t)n); } while (res < 0 && errno == EINTR);
+  kk_fd_ssize_t res;
+  do { res = kk_fd_read(fd, buf, n); } while (res < 0 && errno == EINTR);
   if (res < 0) {
     const int err = errno;
     kk_bytes_drop(b,ctx);
@@ -287,17 +329,12 @@ static kk_std_core_exn__error kk_os_fd_read( kk_box_t h, kk_integer_t max, kk_co
   }
   b = kk_bytes_adjust_length(b, (kk_ssize_t)res, ctx);
   return kk_error_ok(kk_bytes_box(b),ctx);
-  #endif
 }
 
 // Write all the bytes.
 static kk_std_core_exn__error kk_os_fd_write( kk_box_t h, kk_bytes_t content, kk_context_t* ctx ) {
   const int fd = kk_os_fd_of(h,ctx);
   kk_box_drop(h,ctx);
-  #if defined(_WIN32)
-  kk_bytes_drop(content,ctx);
-  return kk_error_from_errno(ENOSYS,ctx);
-  #else
   if (fd < 0) {
     kk_bytes_drop(content,ctx);
     return kk_error_from_errno(EBADF,ctx);
@@ -307,7 +344,7 @@ static kk_std_core_exn__error kk_os_fd_write( kk_box_t h, kk_bytes_t content, kk
   const uint8_t* p = kk_bytes_buf_borrow(content,&len,ctx);
   int err = 0;
   while (len > 0) {
-    const ssize_t res = write(fd, p, (size_t)len);
+    const kk_fd_ssize_t res = kk_fd_write(fd, p, len);
     if (res < 0) {
       if (errno == EINTR) continue;
       err = errno;
@@ -318,19 +355,16 @@ static kk_std_core_exn__error kk_os_fd_write( kk_box_t h, kk_bytes_t content, kk
   }
   kk_bytes_drop(content,ctx);
   return kk_os_unit_result(err,ctx);
-  #endif
 }
 
 static kk_std_core_exn__error kk_os_fd_close( kk_box_t h, kk_context_t* ctx ) {
   int* pfd = (int*)kk_cptr_raw_unbox_borrowed(h,ctx);
   int err = 0;
-  #if !defined(_WIN32)
   if (pfd != NULL && *pfd >= 0) {
     const int fd = *pfd;
     *pfd = -1;
-    if (close(fd) != 0 && errno != EINTR) err = errno;
+    if (kk_fd_close(fd) != 0 && errno != EINTR) err = errno;
   }
-  #endif
   kk_box_drop(h,ctx);
   return kk_os_unit_result(err,ctx);
 }

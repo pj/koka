@@ -362,8 +362,13 @@ backends and diffs the output against its `.out` file.
 
 ### Platform limitations
 
-* The new C file-system and process primitives are POSIX only. On Windows they
-  return `ENOSYS`.
+* The C file-system, file handle, process and thread primitives have POSIX
+  implementations and Windows (MSVCRT/Win32) ones: `CreateProcess` with pipes
+  for `run`, `_open`/`_read`/`_write` for file handles, unique temporary
+  files and directories, SRW locks and condition variables for
+  `std/os/sync`. The Windows code is compiled with MinGW (`-Wall`, no
+  warnings) but has not been run on Windows. On Windows `set-permissions` only
+  sets the read-only attribute and there are no symbolic links.
 * The JavaScript implementations need Node.js. In a browser they report an
   error.
 
@@ -447,6 +452,12 @@ backends and diffs the output against its `.out` file.
   shared after initializing it, and the empty evidence vector is the static
   block `kk_evv_empty_static` (stuck reference count). Eight tasks each
   running 50 000 `finally`/`try` blocks now pass 40 of 40 runs (debug and `-O2`).
+* **Struct fields named like C macros broke the C code on Windows** (fixed in
+  this fork). `process-result` has fields `stdout` and `stderr`, which the C
+  backend used as C field names; with MinGW (and MSVC) those are macros. The
+  backend's list of reserved C names now includes `stdin`, `stdout`,
+  `stderr`, `assert`, and the Windows header macros `near`, `far`, `small`
+  and `interface`.
 * **Externs with ten or more arguments were miscompiled** (fixed in this fork,
   C and JS backends). In an external template, `#10` was read as `#1`
   followed by `0`, so the tenth argument became the first one with a `0`
