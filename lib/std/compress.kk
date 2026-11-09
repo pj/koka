@@ -39,7 +39,10 @@ import std/core/unsafe
 import std/core/undiv
 
 extern import
-  c  { syslib="z" }
+  c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="z" }
+
+extern import
+  c[os=windows] { vcpkg="zlib"; library="zlib" }
 
 extern import
   c  file "compress-inline.c"

@@ -34,7 +34,10 @@ import std/core/unsafe
 import std/core/undiv
 
 extern import
-  c  { syslib="zstd" }
+  c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="zstd" }
+
+extern import
+  c[os=windows] { vcpkg="zstd"; library="zstd" }
 
 extern import
   c  file "zstd-inline.c"

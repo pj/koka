@@ -34,7 +34,10 @@ import std/core/undiv
 import std/num/float64
 
 extern import
-  c  { syslib="sqlite3" }
+  c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="sqlite3" }
+
+extern import
+  c[os=windows] { vcpkg="sqlite3"; library="sqlite3" }
 
 extern import
   c  file "sqlite-inline.c"

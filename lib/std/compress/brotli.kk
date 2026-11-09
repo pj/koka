@@ -33,13 +33,22 @@ import std/core/unsafe
 import std/core/undiv
 
 extern import
-  c  { syslib="brotlienc" }
+  c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="brotlienc" }
 
 extern import
-  c  { syslib="brotlidec" }
+  c[os=windows] { vcpkg="brotli"; library="brotlienc" }
 
 extern import
-  c  { syslib="brotlicommon" }
+  c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="brotlidec" }
+
+extern import
+  c[os=windows] { vcpkg="brotli"; library="brotlidec" }
+
+extern import
+  c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="brotlicommon" }
+
+extern import
+  c[os=windows] { vcpkg="brotli"; library="brotlicommon" }
 
 extern import
   c  file "brotli-inline.c"
