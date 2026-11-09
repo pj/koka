@@ -33,6 +33,8 @@ pub import std/os/sync
 pub import std/io/stream
 pub import std/compress
 pub import std/compress/zip
+pub import std/compress/brotli
+pub import std/compress/zstd
 
 pub import std/text/parse
 pub import std/text/regex
@@ -55,6 +57,7 @@ pub import std/data/heap
 pub import std/data/json
 pub import std/data/toml
 pub import std/data/xml
+pub import std/data/der
 pub import std/data/bitset
 pub import std/data/array
 pub import std/db/sqlite
@@ -65,6 +68,7 @@ pub import std/net/url
 pub import std/net/hpack
 pub import std/crypto/hash
 pub import std/crypto/aes
+pub import std/crypto/x509
 pub import std/log
 pub import std/test
 
@@ -91,6 +95,7 @@ pub import std/async/interleave
 pub import std/async/os/file
 pub import std/async/os/net
 pub import std/async/os/tls
+pub import std/async/os/ocsp
 pub import std/async/os/http2
 pub import std/async/os/http
 pub import std/async/os/process
