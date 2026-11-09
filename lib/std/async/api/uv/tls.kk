@@ -10,13 +10,13 @@ module uv/tls
 
 // static linking order matters: tls, then x509, then crypto
 extern import
-  c[host=libc] { library="mbedtls" }
+  c[host=libc] { vcpkg="mbedtls"; library="mbedtls" }
 
 extern import
-  c[host=libc] { library="mbedx509" }
+  c[host=libc] { vcpkg="mbedtls"; library="mbedx509" }
 
 extern import
-  c[host=libc] { library="mbedcrypto" }
+  c[host=libc] { vcpkg="mbedtls"; library="mbedcrypto" }
 
 extern import
   c  file "tls.c"
@@ -76,3 +76,8 @@ pub extern tls-alpn( t : any ) : ioc string
 pub extern tls-peer-subject( t : any ) : ioc string
   c  "kk_tls_peer_subject"
   js "kk_tls_peer_subject"
+
+// The peer's certificate chain as presented (leaf first), as DER certificates one after another.
+pub extern tls-peer-chain( t : any ) : ioc bytes
+  c  "kk_tls_peer_chain"
+  js "kk_tls_peer_chain"

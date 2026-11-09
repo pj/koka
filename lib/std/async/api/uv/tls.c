@@ -546,6 +546,26 @@ kk_string_t kk_tls_alpn( kk_box_t bt, kk_context_t* ctx ) {
   return s;
 }
 
+// The peer's certificate chain as presented, leaf first: DER certificates one after another.
+kk_bytes_t kk_tls_peer_chain( kk_box_t bt, kk_context_t* ctx ) {
+  kk_tls_t* t = kk_tls_unbox(bt, ctx);
+  const mbedtls_x509_crt* first = mbedtls_ssl_get_peer_cert(&t->ssl);
+  size_t total = 0;
+  for (const mbedtls_x509_crt* c = first; c != NULL && c->raw.p != NULL; c = c->next) total += c->raw.len;
+  kk_bytes_t b;
+  if (total == 0) b = kk_bytes_empty();
+  else {
+    uint8_t* p;
+    b = kk_bytes_alloc_buf((kk_ssize_t)total, &p, ctx);
+    for (const mbedtls_x509_crt* c = first; c != NULL && c->raw.p != NULL; c = c->next) {
+      memcpy(p, c->raw.p, c->raw.len);
+      p += c->raw.len;
+    }
+  }
+  kk_box_drop(bt, ctx);
+  return b;
+}
+
 // The subject of the verified peer certificate, for example "CN=example.com" ("" if none).
 kk_string_t kk_tls_peer_subject( kk_box_t bt, kk_context_t* ctx ) {
   kk_tls_t* t = kk_tls_unbox(bt, ctx);

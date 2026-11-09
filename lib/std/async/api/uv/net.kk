@@ -81,6 +81,11 @@ pub extern net-tls-peer-subject( sock : any ) : ioc string
   c  "kk_net_tls_peer_subject"
   js "kk_net_tls_peer_subject"
 
+// The peer's certificate chain of a native TLS socket (leaf first), as DER certificates one after another.
+pub extern net-tls-peer-chain( sock : any ) : ioc bytes
+  c  "kk_net_tls_peer_chain"
+  js "kk_net_tls_peer_chain"
+
 // Is TLS provided natively by the host (Node.js)? Otherwise use the `uv/tls` engine.
 pub extern net-has-native-tls() : bool
   c  inline "false"

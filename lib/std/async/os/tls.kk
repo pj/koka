@@ -38,11 +38,15 @@
 module async/os/tls
 
 import std/core/undiv
+import std/core/unsafe
 pub import std/io/stream
 import std/num/int32
+import std/data/der
+import std/crypto/x509
 import async/async
 import async/internal
 import async/os/net
+import async/os/ocsp
 import async/api/net
   [host=libc|jsnode] async/api/uv/net
 import async/api/tls
@@ -77,8 +81,40 @@ pub fun is-secure( s : net-stream ) : bool
 // - `server-name`: the name to ask the server for (SNI) and to check its
 //   certificate against, if it differs from `host` (for example when `host`
 //   is an IP address).
+// - `ocsp`: ask the OCSP responder named in the server certificate whether
+//   it was revoked (see `std/async/os/ocsp`); the connection fails if it was,
+//   if the responder does not know it, or if the responder cannot be asked.
+//   The issuer is taken from the chain the server sends, or from `ca`.
 pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca : string = "",
-                     cert : string = "", key : string = "", alpn : list<string> = [], server-name : string = "", crl : string = "" ) : <async,exn,net> net-stream
+                     cert : string = "", key : string = "", alpn : list<string> = [], server-name : string = "", crl : string = "",
+                     ocsp : bool = False ) : <async,exn,net> net-stream
+  val s = tls-open(host, port, verify, ca, cert, key, alpn, server-name, crl)
+  if ocsp then
+    match try({ check-ocsp(s, ca) })
+      Error(exn) ->
+        s.sock.close
+        throw-exn(exn)
+      Ok -> ()
+  s
+
+// Check the server certificate of a new connection with OCSP.
+fun check-ocsp( s : net-stream, ca : string ) : <async,exn,net> ()
+  val chain = s.peer-chain
+  match chain
+    Nil -> throw("tls: no server certificate to check with OCSP")
+    Cons(leaf, rest) ->
+      val candidates = rest ++ (if ca.is-empty then [] else x509-pem(ca))
+      match candidates.find(fn(c) catch(fn(_) False, { leaf.is-signed-by(c) }))
+        Nothing -> throw("tls: the issuer of the server certificate is unknown, so it cannot be checked with OCSP")
+        Just(issuer) ->
+          // (reading the clock is the only nondeterminism, and connecting is effectful anyway)
+          val status = pretend-no-ndet { ocsp-check(leaf, issuer) }
+          match status
+            Good -> ()
+            _ -> throw("tls: the server certificate (" ++ leaf.subject-name ++ ") is " ++ status.show ++ " according to its OCSP responder")
+
+fun tls-open( host : string, port : int, verify : bool, ca : string, cert : string, key : string, alpn : list<string>,
+              server-name : string, crl : string ) : <async,exn,net> net-stream
   with try-exn-prepend("tls connect to " ++ host ++ ":" ++ port.show)
   val alpns = alpn.join(",")
   val name = if server-name.is-empty then host else server-name
@@ -100,8 +136,9 @@ pub fun tls-connect( host : string, port : int = 443, verify : bool = True, ca :
 
 // Connect, run `action` with the stream, and close it afterwards.
 pub fun scoped/tls-connect( host : string, port : int, action : net-stream -> <async,exn,net|e> a, verify : bool = True, ca : string = "",
-                            cert : string = "", key : string = "", alpn : list<string> = [], server-name : string = "", crl : string = "" ) : <async,exn,net|e> a
-  val s = tls-connect(host, port, verify, ca, cert, key, alpn, server-name, crl)
+                            cert : string = "", key : string = "", alpn : list<string> = [], server-name : string = "", crl : string = "",
+                            ocsp : bool = False ) : <async,exn,net|e> a
+  val s = tls-connect(host, port, verify, ca, cert, key, alpn, server-name, crl, ocsp)
   with finally { s.close }
   action(s)
 
@@ -179,6 +216,15 @@ pub fun peer-certificate( s : net-stream ) : async maybe<string>
     Just(t) -> async-ioc { tls-peer-subject(t) }
     Nothing -> if s.secure then async-ioc { net-tls-peer-subject(s.sock.@unsafe-hnd) } else ""
   if subj.is-empty then Nothing else Just(subj)
+
+// The certificate chain the peer presented, leaf first (empty if the stream
+// is not encrypted or the peer sent none). The certificates are as sent: see
+// `peer-certificate` for whether the leaf was verified.
+pub fun peer-chain( s : net-stream ) : <async,exn> list<certificate>
+  val ders = match s.engine
+    Just(t) -> async-ioc { tls-peer-chain(t) }
+    Nothing -> if s.secure then async-ioc { net-tls-peer-chain(s.sock.@unsafe-hnd) } else bytes/empty
+  ders.split.map(x509)
 
 // The remote `(ip, port)` of the stream.
 pub fun net-stream/peer-address( s : net-stream ) : async (string, int)

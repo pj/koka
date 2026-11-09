@@ -519,6 +519,11 @@ kk_string_t kk_net_tls_peer_subject( kk_box_t sock, kk_context_t* ctx ) {
   return kk_string_empty();
 }
 
+kk_bytes_t kk_net_tls_peer_chain( kk_box_t sock, kk_context_t* ctx ) {
+  kk_box_drop(sock, ctx);
+  return kk_bytes_empty();   // (TLS is not native on the C backend)
+}
+
 // ---------------------------------------------------------------------------
 // UDP
 // ---------------------------------------------------------------------------
