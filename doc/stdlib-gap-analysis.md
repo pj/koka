@@ -499,7 +499,10 @@ backends and diffs the output against its `.out` file.
   fork). Linux dissolves the binding of a UDP socket that was bound to port 0
   when it is disconnected (`connect` with `AF_UNSPEC`); macOS keeps it.
   `disconnect` now binds the socket to the same address again when its port
-  was lost. Found by the first CI run on Linux (`test/net/udp3`).
+  was lost. On JS (where a socket cannot be bound again), connecting a UDP
+  socket is emulated: the peer is remembered, sends go to it, and datagrams
+  from others are dropped. Found by the first CI runs on Linux
+  (`test/net/udp3`).
 * `test/lazy/queue/physicists-stack` segfaults on JS on macOS: Node is run
   with `--stack-size=100000` (~100 MB), but the main thread's stack is 8 MB,
   so deep recursion crashes instead of raising `RangeError`. (Not fixed; the
