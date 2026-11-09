@@ -41,12 +41,14 @@
           pkgs.mbedtls    # std/async/os/tls (C backend); ships static libraries
           pkgs.zlib       # std/compress (C backend)
           pkgs.sqlite     # std/db/sqlite (C backend)
+          pkgs.brotli     # std/compress/brotli (C backend)
+          pkgs.zstd       # std/compress/zstd (C backend)
         ];
 
         # koka checks that C libraries exist before linking, but only searches
         # fixed system paths; point it at the nix store (headers and link flags
         # are already provided by the nix cc-wrapper).
-        kokaOptions = "--cclibdir=${libuv}/lib;${pcre2.out}/lib;${pkgs.mbedtls}/lib;${pkgs.zlib}/lib";
+        kokaOptions = "--cclibdir=${libuv}/lib;${pcre2.out}/lib;${pkgs.mbedtls}/lib;${pkgs.zlib}/lib;${pkgs.brotli.lib}/lib;${pkgs.zstd.out}/lib";
       in
       {
         devShells.default = pkgs.mkShell {
