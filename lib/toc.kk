@@ -29,6 +29,7 @@ pub import std/os/readline
 pub import std/os/task
 pub import std/os/fs
 pub import std/os/io
+pub import std/os/sync
 pub import std/io/stream
 pub import std/compress
 
