@@ -1,0 +1,13 @@
+aes-128: ok
+aes-192: ok
+aes-256: ok
+ctr: ok
+a message of any length
+(True,True)
+pbkdf2-sha1 1: ok
+pbkdf2-sha1 4096: ok
+pbkdf2-sha1 25 bytes: ok
+pbkdf2-sha256 4096: ok
+(True,True)
+f00f
+(16,True)

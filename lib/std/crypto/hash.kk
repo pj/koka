@@ -23,6 +23,7 @@
 module std/crypto/hash
 
 import std/text/encoding
+import std/num/int32
 
 extern import
   c  file "hash-inline.c"
@@ -100,9 +101,7 @@ fun hmac( key : bytes, message : bytes, h : bytes -> bytes ) : bytes
 
 // bitwise xor of two bytes (0..255)
 fun xor8( a : int, b : int ) : int
-  list(0, 7).foldl(0) fn(acc, i)
-    val bit = 2 ^ i
-    if ((a / bit) % 2) != ((b / bit) % 2) then acc + bit else acc
+  xor(a.int32, b.int32).int
 
 // Compare two byte sequences in constant time (for comparing MACs).
 pub fun constant-time-equals( a : bytes, b : bytes ) : bool
