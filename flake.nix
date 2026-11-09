@@ -40,6 +40,7 @@
           pcre2           # std/text/regex (C backend)
           pkgs.mbedtls    # std/async/os/tls (C backend); ships static libraries
           pkgs.zlib       # std/compress (C backend)
+          pkgs.sqlite     # std/db/sqlite (C backend)
         ];
 
         # koka checks that C libraries exist before linking, but only searches

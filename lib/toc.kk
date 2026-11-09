@@ -53,6 +53,7 @@ pub import std/data/heap
 pub import std/data/json
 pub import std/data/toml
 pub import std/data/bitset
+pub import std/db/sqlite
 pub import std/data/csv
 pub import std/data/uuid
 

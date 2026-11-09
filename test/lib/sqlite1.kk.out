@@ -1,0 +1,22 @@
+True
+1
+1
+{id: 1, name: "ada", age: 36, score: 1.5, photo: [01 02]}
+{id: 2, name: "bob", age: NULL, score: NULL, photo: NULL}
+{id: 3, name: "O\'Brien; drop table person; --", age: 51, score: NULL, photo: NULL}
+(Just(1),Just("ada"),Just(36))
+(Just(1.5),Just(2),True)
+Just(3)
+Just("NULL")
+["{two: 2, xy: \"xy\", n: NULL, f: 5, big: 9007199254740993}"]
+2
+["O\'Brien; drop table person; --"]
+True
+["ada","bob","O\'Brien; drop table person; --","cy"]
+sqlite: cannot prepare "insert into nosuch values (1)": no such table: nosuch
+sqlite: cannot run "insert into person(name) values (null)": NOT NULL constraint failed: person.name
+sqlite: cannot prepare "selec 1": near "selec": syntax error
+True
+sqlite: table person already exists
+Just(5050)
+True

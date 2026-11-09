@@ -357,7 +357,8 @@ backends and diffs the output against its `.out` file.
 | 32 | `std/data/bitset` | ✅ Persistent dense bitset in 64-bit words: `bitset(list)` (linear after sorting), `range-bitset`, `member`, `insert`/`remove` (copying), `+` (union), `-`, `intersection`, `sym-difference`, `complement`, `is-subset`/`is-disjoint`, `count` (popcount), `minimum`/`maximum`/`next-member` (ctz/clz), `list`, `seq`, `foldl`, `filter`, `==`, `show` |
 | 33 | `std/text/pretty` | ✅ Wadler/Leijen pretty printer (strict renderer): `text`, `line`, `linebreak`, `softline`, `hardline`, `++`, `<+>`, `<->`, `group`, `nest`, `align`, `hang`, `indent`, `column`, `nesting`, `fill`, `fill-break`, `hsep`/`vsep`/`sep`, `hcat`/`vcat`/`cat`, `fill-sep`/`fill-cat`, `punctuate`, `enclose-sep`, `list-doc`, `tupled`, `semi-braces`, `block`, `parens` etc., `pretty(width)` |
 | 34 | `std/text/unicode` | ✅ Tables generated from the UCD 17.0 (`util/gen-unicode-tables.py`, decoded on first use): `graphemes` (UAX #29 extended grapheme clusters, incl. emoji ZWJ sequences, flags and Indic conjuncts; fixes #458), `word-segments`/`words` (UAX #29 word boundaries), grapheme-aware `width` (emoji, flags and presentation selectors are 2 columns; fixes #457), `fold-case` and `equals-ignore-case` (full case folding), `normalize` NFC/NFD/NFKC/NFKD in Koka (it was a no-op on C). Passes the official GraphemeBreakTest (766/766), WordBreakTest (1944/1944) and a NormalizationTest sample (3631/3631) on C and JS. `graphemes` no longer normalizes its input |
-| 35–36 | sqlite, xml | ❌ |
+| 35 | `std/db/sqlite` | ✅ System `sqlite3` on C (the flake adds it), `node:sqlite` on JS: `open-database`/`with-database` (files and `:memory:`), `exec` (scripts), `execute` and `query`/`query-each`/`query-one`/`query-value` with `?` parameters bound as `sql-value`s (`SqlNull`, `SqlInt` up to 64 bits, `SqlFloat`, `SqlText`, `SqlBlob`; `.sql` conversions incl. `maybe` and `bool`), rows by column name (`int`, `text`, `float`, `blob`, `is-null`), `last-insert-rowid`, `transaction` (rolled back on an exception), errors with SQLite's message, parameter count checked |
+| 36 | xml | ❌ |
 
 ### Platform limitations
 
@@ -493,5 +494,8 @@ backends and diffs the output against its `.out` file.
 * **A C library found only as a `.dylib` needs `syslib`.** `library="z"` looks
   for a static library to copy into the build and fails for nix's zlib;
   `syslib="z"` just links `-lz`.
+* **Editing only an inline `.c`/`.js` file does not rebuild the module.** The
+  build cache keys on the `.kk` file, so touch it after changing its inline
+  code, or the old code keeps running.
 * **A local `val` shadows functions of the same name for dot calls.**
   `val (lines, code) = ...` makes a later `s.lines` refer to the tuple.
