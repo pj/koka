@@ -87,6 +87,58 @@ pub struct http-response
   headers : headers = []
   body : bytes = bytes/empty
   version : string = "HTTP/1.1"   // on the client: the protocol of the response (`"HTTP/1.1"` or `"HTTP/2"`)
+  body-writer : maybe<body-writer> = Nothing   // on the server: produce the body in parts (see `stream-response`)
+
+// A function that produces a response body in parts: it calls `write` with
+// each part as it becomes available.
+pub alias body-writer = (write : bytes -> <async,exn> ()) -> <async,exn,ndet> ()
+
+// A response whose body is produced in parts by `writer`, and sent as it is
+// produced (with chunked transfer encoding over HTTP/1.1; HTTP/2 and
+// HTTP/1.0 responses collect the parts first).
+//
+// ```
+// stream-response(200, "text/plain") fn(write)
+//   for(1, 10) fn(i)
+//     write(("line " ++ i.show ++ "\n").bytes)
+//     wait(100.milli-seconds)
+// ```
+pub fun stream-response( status : int, content-type : string, writer : body-writer, headers : headers = [] ) : http-response
+  Http-response(status, reason-phrase(status), headers.set-header("Content-Type", content-type), bytes/empty, "HTTP/1.1", Just(writer))
+
+// Send a response (streamed in chunks if it has a body writer, the method is
+// not HEAD, and the client speaks HTTP/1.1). (This is a separate function:
+// written inline in `serve-connection`, the JavaScript backend passed the
+// wrong arguments to the continuation after a body writer suspended.)
+fun send-response( sock : net-stream, method : string, version : string, status-line : string, hs : headers, res : http-response ) : <async,exn,ndet> ()
+  match res.body-writer
+    Nothing -> write-message(sock, status-line, hs, if method == "HEAD" then bytes/empty else res.body)
+    Just(w) ->
+      if method == "HEAD" then write-message(sock, status-line, hs, bytes/empty)
+      elif version == "HTTP/1.1" then send-chunked(sock, status-line, hs, w)
+      else
+        val body = collect-body(w)
+        write-message(sock, status-line, hs, body)
+
+// Send a response whose body is produced by `w`, in chunks as it is produced.
+fun send-chunked( sock : net-stream, status-line : string, hs : headers, w : body-writer ) : <async,exn,ndet> ()
+  val hsc = hs.remove-headers(["Content-Length"]).set-header("Transfer-Encoding", "chunked")
+  sock.write-all(head-text(status-line, hsc).bytes)
+  w(fn(part) send-chunk(sock, part))
+  sock.write-all("0\r\n\r\n".bytes)
+
+fun send-chunk( sock : net-stream, part : bytes ) : <async,exn> ()
+  if !part.is-empty then
+    sock.write-all((part.length.show-hex(use-capitals = False, pre = "") ++ "\r\n").bytes ++ part ++ "\r\n".bytes)
+
+// Run a body writer and collect its parts.
+fun collect-body( w : body-writer ) : <async,exn,ndet> bytes
+  val parts : ref<global,list<bytes>> = async-ioc { ref([]) }
+  w(fn(b) async-ioc { parts := Cons(b, read-parts(parts)) })
+  async-ioc { read-parts(parts) }.reverse.join
+
+fun read-parts( r : ref<global,list<bytes>> ) : <read<global>,div> list<bytes>
+  !r
 
 // Look up a header (case-insensitive).
 pub fun header( hs : headers, name : string ) : maybe<string>
@@ -495,6 +547,151 @@ fun read-response( r : reader, method : string ) : <async,exn> (http-response, r
         (Http-response(status, parts.drop(2).join(" "), hs, res-body), r2, reusable)
 
 // ----------------------------------------------------------------------------
+// Streaming bodies (client)
+// ----------------------------------------------------------------------------
+
+// The body of a response as a stream, read from the connection as it is consumed.
+fun body-stream( r : reader, hs : headers ) : byte-stream<<async,exn|e>>
+  val te = hs.header("Transfer-Encoding").default("").to-lower
+  if te.find("chunked").is-just then chunked-stream(r)
+  else match hs.header("Content-Length").map(fn(cl) cl.trim.parse-int)
+    Just(Just(n)) -> length-stream(r, n)
+    Just(Nothing) -> seq/suspend(fn() throw("http: invalid Content-Length"))
+    Nothing -> eof-stream(r)
+
+// `left` more bytes.
+fun length-stream( r : reader, left : int ) : byte-stream<<async,exn|e>>
+  seq/suspend fn()
+    if left <= 0 then Done
+    elif !r.buf.is-empty then
+      val n = min(left, r.buf.length)
+      Yield(r.buf.subbytes(0, n), length-stream(Reader(r.sock, r.buf.subbytes(n)), pretend-decreasing(left - n)))
+    else
+      val more = r.sock.read
+      if more.is-empty then throw("http: connection closed in the middle of a message body")
+      val n = min(left, more.length)
+      Yield(more.subbytes(0, n), length-stream(Reader(r.sock, more.subbytes(n)), pretend-decreasing(left - n)))
+
+// Everything until the connection is closed.
+fun eof-stream( r : reader ) : byte-stream<<async,exn|e>>
+  seq/suspend fn()
+    if !r.buf.is-empty then Yield(r.buf, eof-stream(pretend-decreasing(Reader(r.sock, bytes/empty))))
+    else
+      val more = r.sock.read
+      if more.is-empty then Done else Yield(more, eof-stream(pretend-decreasing(Reader(r.sock, bytes/empty))))
+
+// A chunked body (RFC 9112 section 7.1), one chunk at a time.
+fun chunked-stream( r : reader ) : byte-stream<<async,exn|e>>
+  seq/suspend fn()
+    match r.read-until(crlf, 1024)
+      Nothing -> throw("http: connection closed in a chunked body")
+      Just((line, r1)) ->
+        val size-text = line.string.split(";").head.default("").trim
+        val size = match parse-int(size-text, hex = True)
+          Just(n) -> n
+          Nothing -> throw("http: invalid chunk size " ++ size-text.show)
+        if size == 0 then
+          val _ = skip-trailers(r1)
+          Done
+        else
+          val (chunk, r2) = r1.read-exact(size)
+          val (_, r3) = r2.read-exact(2)   // CRLF after the chunk
+          Yield(chunk, chunked-stream(pretend-decreasing(r3)))
+
+// Send a request whose body is a stream, with chunked transfer encoding.
+fun write-streamed( s : net-stream, start-line : string, hs : headers, upload : byte-stream<<async,exn|e>> ) : <async,exn,div|e> ()
+  val hsc = hs.remove-headers(["Content-Length"]).set-header("Transfer-Encoding", "chunked")
+  s.write-all(head-text(start-line, hsc).bytes)
+  upload.foreach fn(part)
+    if !part.is-empty then
+      s.write-all((part.length.show-hex(use-capitals = False, pre = "") ++ "\r\n").bytes ++ part ++ "\r\n".bytes)
+  s.write-all("0\r\n\r\n".bytes)
+
+// Send a request and give `action` the response with its body as a stream
+// (`body` of the response is empty), read from the connection while `action`
+// consumes it; the connection is closed afterwards. The request body is
+// `body`, or `upload` (a stream, sent with chunked transfer encoding). Bodies
+// encoded with gzip or deflate are decoded, unless `headers` contain an
+// `Accept-Encoding`. Redirects are followed as in `http-request` (but not
+// for an `upload`, which cannot be sent twice). HTTP/1.1 is used.
+//
+// ```
+// http-stream("GET", "https://example.com/big.log") fn(res, body)
+//   body.lines.filter(fn(l) l.contains("ERROR")).foreach(println)
+// ```
+pub fun http-stream( method : string, url : string, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a,
+                     headers : headers = [], body : bytes = bytes/empty, upload : maybe<byte-stream<<async,exn,net,ndet|e>>> = Nothing,
+                     max-redirects : int = 10, tls-ca : string = "", tls-cert : string = "", tls-key : string = "", tls-crl : string = "" ) : <async,exn,net,ndet,div|e> a
+  val u = match parse-url(url)
+    Just(u) -> u
+    Nothing -> throw("http: invalid url " ++ url.show)
+  val decode = headers.header("Accept-Encoding").is-nothing
+  val hs = if decode then headers ++ [("Accept-Encoding", "gzip, deflate")] else headers
+  stream-url(method, u, hs, body, upload, if upload.is-just then 0 else max-redirects, Tls-opts(tls-ca, tls-cert, tls-key, tls-crl), decode, action)
+
+// Either a redirect to follow, or the result of the action.
+type stream-outcome<a>
+  Follow( method : string, u : url, headers : headers, body : bytes )
+  Finished( result : a )
+
+fun stream-url( method : string, u : url, headers : headers, body : bytes, upload : maybe<byte-stream<<async,exn,net,ndet|e>>>, redirects-left : int,
+                tls : tls-opts, decode : bool, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a ) : <async,exn,net,ndet,div|e> a
+  match stream-once(method, u, headers, body, upload, redirects-left, tls, decode, action)
+    Follow(m, next, hs, b) -> stream-url(m, next, hs, b, Nothing, pretend-decreasing(redirects-left - 1), tls, decode, action)
+    Finished(x) -> x
+
+fun stream-once( method : string, u : url, headers : headers, body : bytes, upload : maybe<byte-stream<<async,exn,net,ndet|e>>>, redirects-left : int,
+                 tls : tls-opts, decode : bool, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a ) : <async,exn,net,ndet,div|e> stream-outcome<a>
+  if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
+  val conn-port = u.effective-port.default(80)
+  val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
+  val host-header = if u.port.is-just then u.host ++ ":" ++ conn-port.show else u.host
+  val hs0 = headers.set-header("Host", host-header).set-header("Connection", "close")
+  val hs = if hs0.header("User-Agent").is-just then hs0 else hs0.set-header("User-Agent", "koka-http")
+  val start-line = method ++ " " ++ target ++ " HTTP/1.1"
+  val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, crl = tls.crl)
+          else plain-stream(tcp-connect(u.host, conn-port))
+  with finally { s.close }
+  match upload
+    Just(up) -> write-streamed(s, start-line, hs, up)
+    Nothing -> write-message(s, start-line, hs, body)
+  val (status, reason, rhs, r) = read-head(Reader(s, bytes/empty))
+  val is-redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+  match rhs.header("Location")
+    Just(location) | is-redirect && redirects-left > 0 ->
+      val next = u.resolve(location.trim)
+      val to-get = status == 303 && method != "HEAD" || (status == 301 || status == 302) && method == "POST"
+      val (m, b, hs1) = if to-get then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
+                        else (method, body, headers)
+      val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
+      Follow(m, next, hs2, b)
+    _ | is-redirect && rhs.header("Location").is-just && redirects-left <= 0 && upload.is-nothing ->
+      throw("http: too many redirects (the last one was to " ++ rhs.header("Location").default("").show ++ ")")
+    _ ->
+      val no-body = method == "HEAD" || status == 204 || status == 304
+      val raw-stream = if no-body then seq/empty() else body-stream(r, rhs)
+      val codings = rhs.header("Content-Encoding").default("").split(",").map(fn(c) c.trim.to-lower).filter(fn(c) !c.is-empty && c != "identity")
+      val known = !codings.is-nil && codings.all(fn(c) c == "gzip" || c == "x-gzip" || c == "deflate")
+      val (stream, hs-out) = if decode && known then
+          (codings.foldl(raw-stream, fn(st, _) st.decompress(Auto)), rhs.remove-headers(["Content-Encoding", "Content-Length"]))
+        else (raw-stream, rhs)
+      Finished(action(Http-response(status, reason, hs-out, bytes/empty, "HTTP/1.1"), stream))
+
+// Read the status line and headers (skipping informational responses).
+fun read-head( r : reader ) : <async,exn> (int, string, headers, reader)
+  match r.read-until(crlfcrlf, 64 * 1024)
+    Nothing -> throw("http: connection closed before the response")
+    Just((head-bytes, r1)) ->
+      val lines = head-bytes.string.split("\r\n")
+      val status-line = lines.head.default("")
+      val parts = status-line.split(" ")
+      val status = match parts.drop(1).head.map(fn(t) parse-int(t))
+        Just(Just(n)) -> n
+        _ -> throw("http: invalid status line " ++ status-line.show)
+      if status >= 100 && status < 200 && status != 101 then read-head(pretend-decreasing(r1))
+      else (status, parts.drop(2).join(" "), parse-headers(lines.drop(1)), r1)
+
+// ----------------------------------------------------------------------------
 // Clients with connection reuse
 // ----------------------------------------------------------------------------
 
@@ -783,7 +980,9 @@ fun h2-adapter( on-request : http-request -> <async,exn,ndet|e> http-response, p
     val plain = hs.filter(fn((n, _)) !n.starts-with(":").is-just)
     val hs' = if plain.header("host").is-just then plain else Cons(("host", pseudo(":authority")), plain)
     val res = on-request(Http-request(pseudo(":method"), pseudo(":path"), hs', req-body, peer, client-cert, "HTTP/2"))
-    (res.status, res.headers, res.body)
+    match res.body-writer
+      Just(w) -> (res.status, res.headers, collect-body(w))
+      Nothing -> (res.status, res.headers, res.body)
 
 // A request read by the server.
 type incoming
@@ -837,6 +1036,6 @@ fun serve-connection( r : reader, on-request : http-request -> <async,exn,ndet|e
         val res-headers = if !keep-alive || idle-secs < 1 || res.header("Keep-Alive").is-just then hs1
                           else hs1.set-header("Keep-Alive", "timeout=" ++ idle-secs.show)
         val reason = if res.reason.is-empty then reason-phrase(res.status) else res.reason
-        val res-body = if method == "HEAD" then bytes/empty else res.body
-        write-message(r.sock, "HTTP/1.1 " ++ res.status.show ++ " " ++ reason, res-headers, res-body)
+        val status-line = "HTTP/1.1 " ++ res.status.show ++ " " ++ reason
+        send-response(r.sock, method, version, status-line, res-headers, res)
         if keep-alive then serve-connection(pretend-decreasing(r2), on-request, False, idle-timeout, request-timeout)
