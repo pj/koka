@@ -327,7 +327,7 @@ backends and diffs the output against its `.out` file.
 | 3 | `std/data/map`, `std/data/set` | ✅ Weight-balanced persistent trees: lookup, insert, remove, alter, union, intersection, difference, split, range queries, `elem-at` |
 | 4 | `std/data/hashmap`, `std/data/hashset` | ✅ Hash buckets in a `map<int,_>` (not a HAMT yet) |
 | 5 | `std/data/imap`, `iset`, `dict` | ✅ As aliases of `map<int,_>`, `set<int>` and `map<string,_>` (not Patricia trees) |
-| 6 | `std/data/array` | ❌ Not started (needs runtime and maintainer input) |
+| 6 | `std/data/array` | ✅ Mutable growable `array<h,a>` under `st<h>` (use with `run` to stay pure): `push`/`pop` (amortized O(1), doubling), `get`/`set`/`a[i]`/`at`/`modify`, `insert`/`remove-at`, `swap`, `reserve`, `extend`, `clear`, `reverse`, `sort` (stable), `map-in-place`, `foreach(-indexed)`, `foldl`, `find-index`, copying `list`/`vector`/`slice`; updates are in place on both backends (the storage vector is never shared; JS bypasses the copying `kk_ref_vector_assign_borrow`). Reads skip the `hdiv` check, so an array of self-referencing closures could tie a knot without `div` |
 | 7 | `std/data/deque`, `std/data/heap` | ✅ Banker's deque; pairing heap |
 | 8 | `std/core/seq` | ✅ Lazy, pull-based `seq<e,a>` (like OCaml `Seq.t`) and generators (`generate { ... yield(x) ... }`, built from escaping resumptions); `count-from`, `range`, `iterate`, `unfold`, `repeat(edly)`, `cycle`; conversion from lists, vectors, strings and `maybe`; lazy `map`, `filter`, `filter-map`, `take(-while)`, `drop(-while)`, `step-by`, `++`, `concat`, `flat-map`, `zip(-with)`, `indexed`, `scan`, `chunk`, `window`, `intersperse`, `dedup`, `tap`; consumers `list`, `vector`, `foldl`, `foreach`, `find`, `any`/`all`, `length`, `at`, `last`, `sum`, `minimum`/`maximum`, `split-at`, `uncons`, `show`. Not imported by `std/core`. Lazy `seq` conversions for `map`/`set` (plus `seq-from` for ordered ranges), `hashmap`, `hashset`, `deque` and `heap` (ascending), and a lazy directory `walk` in `std/os/fs` |
 | 9 | `std/text/builder` | ✅ `builder` value plus a `build { emit(..) }` effect |
@@ -497,5 +497,12 @@ backends and diffs the output against its `.out` file.
 * **Editing only an inline `.c`/`.js` file does not rebuild the module.** The
   build cache keys on the `.kk` file, so touch it after changing its inline
   code, or the old code keeps running.
+* **Reading a `ref` of a polymorphic type adds `div`.** `!r` with
+  `r : ref<h,vector<a>>` has the `hdiv` constraint, so it is divergent for any
+  `a` that could mention the heap. Library code that controls what is stored
+  can read through an extern typed `read<h>`.
+* **A definition's own name shadows its overloads in its body.** Inside
+  `pub fun list( a : array<h,a> )`, `list(0, n)` is a recursive call (and
+  fails or diverges), not `std/core/list/list`.
 * **A local `val` shadows functions of the same name for dot calls.**
   `val (lines, code) = ...` makes a later `s.lines` refer to the tuple.
