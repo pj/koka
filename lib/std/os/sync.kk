@@ -6,8 +6,8 @@
   found in the LICENSE file at the root of this distribution.
 ---------------------------------------------------------------------------*/
 
-/* Threads and shared state: atomic integers, shared cells, mutexes and
-   channels.
+/* Threads and shared state: atomic integers, shared cells, mutexes,
+   condition variables and channels.
 
    ```
    import std/os/sync
@@ -40,6 +40,9 @@
    something that is not there yet raises an exception about a deadlock.
 */
 module std/os/sync
+
+import std/num/int64
+import std/time/duration
 
 extern import
   c  file "sync-inline.c"
@@ -147,6 +150,48 @@ pub fun with-lock( m : mutex, action : () -> <ndet|e> a ) : <ndet|e> a
   action()
 
 // ----------------------------------------------------------------------------
+// Condition variables
+// ----------------------------------------------------------------------------
+
+// A condition variable: threads wait on it (holding a mutex) until another
+// thread changes the state the mutex guards and notifies them.
+//
+// ```
+// val m = mutex()
+// val ready = shared(False)
+// val c = condition()
+// val f = spawn { m.with-lock { c.wait-until(m, { ready.read }) }; "go" }
+// m.with-lock { ready.write(True); c.notify-all }
+// f.join
+// ```
+abstract struct condition( hnd : any )
+
+pub fun condition() : ndet condition
+  Condition(prim-condition-new())
+
+// Inside `m.with-lock`: release `m`, wait until notified, and lock `m` again.
+// A thread can also wake up without a notification, so check the state in a
+// loop (or use `wait-until`).
+pub fun wait( c : condition, m : mutex ) : ndet ()
+  prim-condition-wait(c.hnd, m.hnd)
+
+// Like `wait`, but for at most `timeout`; returns `False` when the time ran out.
+pub fun wait-for( c : condition, m : mutex, timeout : duration ) : ndet bool
+  prim-condition-wait-for(c.hnd, m.hnd, timeout.milli-seconds.int64)
+
+// Inside `m.with-lock`: wait until `pred` holds (it is checked with `m` held).
+pub fun wait-until( c : condition, m : mutex, pred : () -> <ndet,div|e> bool ) : <ndet,div|e> ()
+  while { !pred() } { c.wait(m) }
+
+// Wake up one waiting thread.
+pub fun notify( c : condition ) : ndet ()
+  prim-condition-notify(c.hnd, False)
+
+// Wake up all waiting threads.
+pub fun notify-all( c : condition ) : ndet ()
+  prim-condition-notify(c.hnd, True)
+
+// ----------------------------------------------------------------------------
 // Channels
 // ----------------------------------------------------------------------------
 
@@ -217,6 +262,22 @@ extern prim-mutex-lock( m : any ) : ndet ()
 extern prim-mutex-unlock( m : any ) : ndet ()
   c  "kk_sync_mutex_unlock"
   js "_sync_mutex_unlock"
+
+extern prim-condition-new() : ndet any
+  c  "kk_sync_condition_new"
+  js "_sync_condition_new"
+
+extern prim-condition-wait( c : any, m : any ) : ndet ()
+  c  "kk_sync_condition_wait"
+  js "_sync_condition_wait"
+
+extern prim-condition-wait-for( c : any, m : any, ms : int64 ) : ndet bool
+  c  "kk_sync_condition_wait_for"
+  js "_sync_condition_wait_for"
+
+extern prim-condition-notify( c : any, all : bool ) : ndet ()
+  c  "kk_sync_condition_notify"
+  js "_sync_condition_notify"
 
 extern prim-cell-new( x : a ) : ndet any
   c  "kk_sync_cell_new"

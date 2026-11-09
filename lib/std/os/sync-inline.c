@@ -21,6 +21,11 @@ typedef CONDITION_VARIABLE kk_sync_cond_t;
 #define kk_sync_cond_destroy(c)   ((void)(c))
 #define kk_sync_cond_wait(c,m)    SleepConditionVariableSRW(c, m, INFINITE, 0)
 #define kk_sync_cond_signal(c)    WakeConditionVariable(c)
+#define kk_sync_cond_broadcast(c) WakeAllConditionVariable(c)
+// returns false on a timeout
+static bool kk_sync_cond_timedwait( kk_sync_cond_t* c, kk_sync_lock_t* m, int64_t ms ) {
+  return SleepConditionVariableSRW(c, m, (ms < 0 ? 0 : (ms >= INFINITE ? INFINITE - 1 : (DWORD)ms)), 0);
+}
 #else
 #include <pthread.h>
 typedef pthread_mutex_t    kk_sync_lock_t;
@@ -33,6 +38,19 @@ typedef pthread_cond_t     kk_sync_cond_t;
 #define kk_sync_cond_destroy(c)   pthread_cond_destroy(c)
 #define kk_sync_cond_wait(c,m)    pthread_cond_wait(c, m)
 #define kk_sync_cond_signal(c)    pthread_cond_signal(c)
+#define kk_sync_cond_broadcast(c) pthread_cond_broadcast(c)
+#include <time.h>
+#include <errno.h>
+// returns false on a timeout
+static bool kk_sync_cond_timedwait( kk_sync_cond_t* c, kk_sync_lock_t* m, int64_t ms ) {
+  if (ms < 0) ms = 0;
+  struct timespec ts;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  ts.tv_sec  += (time_t)(ms / 1000);
+  ts.tv_nsec += (long)(ms % 1000) * 1000000L;
+  if (ts.tv_nsec >= 1000000000L) { ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+  return (pthread_cond_timedwait(c, m, &ts) != ETIMEDOUT);
+}
 #endif
 #include <string.h>
 
@@ -116,6 +134,55 @@ static kk_unit_t kk_sync_mutex_lock( kk_box_t b, kk_context_t* ctx ) {
 static kk_unit_t kk_sync_mutex_unlock( kk_box_t b, kk_context_t* ctx ) {
   kk_sync_mutex_unlock_(&((kk_sync_mutex_t*)kk_cptr_raw_unbox_borrowed(b,ctx))->m);
   kk_box_drop(b,ctx);
+  return kk_Unit;
+}
+
+static kk_sync_lock_t* kk_sync_mutex_of( kk_box_t b, kk_context_t* ctx ) {
+  return &((kk_sync_mutex_t*)kk_cptr_raw_unbox_borrowed(b,ctx))->m;
+}
+
+// --- condition variables (used with a mutex)
+
+typedef struct kk_sync_condition_s { kk_sync_cond_t c; } kk_sync_condition_t;
+
+static void kk_sync_condition_free( void* p, kk_block_t* block, kk_context_t* ctx ) {
+  kk_unused(block);
+  kk_sync_cond_destroy(&((kk_sync_condition_t*)p)->c);
+  kk_free(p,ctx);
+}
+
+static kk_box_t kk_sync_condition_new( kk_context_t* ctx ) {
+  kk_sync_condition_t* c = (kk_sync_condition_t*)kk_malloc(sizeof(kk_sync_condition_t),ctx);
+  kk_sync_cond_init(&c->c);
+  kk_box_t b = kk_cptr_raw_box(&kk_sync_condition_free, c, ctx);
+  kk_box_mark_shared(b,ctx);
+  return b;
+}
+
+static kk_sync_cond_t* kk_sync_condition_of( kk_box_t b, kk_context_t* ctx ) {
+  return &((kk_sync_condition_t*)kk_cptr_raw_unbox_borrowed(b,ctx))->c;
+}
+
+// the mutex `m` is held by the caller
+static kk_unit_t kk_sync_condition_wait( kk_box_t c, kk_box_t m, kk_context_t* ctx ) {
+  kk_sync_cond_wait(kk_sync_condition_of(c,ctx), kk_sync_mutex_of(m,ctx));
+  kk_box_drop(c,ctx);
+  kk_box_drop(m,ctx);
+  return kk_Unit;
+}
+
+// returns false on a timeout
+static bool kk_sync_condition_wait_for( kk_box_t c, kk_box_t m, int64_t ms, kk_context_t* ctx ) {
+  const bool woken = kk_sync_cond_timedwait(kk_sync_condition_of(c,ctx), kk_sync_mutex_of(m,ctx), ms);
+  kk_box_drop(c,ctx);
+  kk_box_drop(m,ctx);
+  return woken;
+}
+
+static kk_unit_t kk_sync_condition_notify( kk_box_t c, bool all, kk_context_t* ctx ) {
+  if (all) { kk_sync_cond_broadcast(kk_sync_condition_of(c,ctx)); }
+      else { kk_sync_cond_signal(kk_sync_condition_of(c,ctx)); }
+  kk_box_drop(c,ctx);
   return kk_Unit;
 }
 
