@@ -161,12 +161,18 @@ struct pstate
   rest : list<char>
   open : list<string>
   seen-root : bool
+  entities : list<(string, maybe<string>)> = []   // from the DOCTYPE; `Nothing` for an external entity
+  expanded : int = 0                             // characters produced by entity expansion so far
+
+// The most characters that entity references may expand to in one document
+// (this stops recursive entities and "billion laughs" documents).
+val max-expansion = 1000000
 
 // The events of a document, as a lazy sequence. Errors are raised when the
 // part of the document that has them is read.
 pub fun xml-events( s : string ) : seq<<exn|e>,xml-event>
   val src = s.list
-  seq/suspend(fn() event-step(src, Pstate(src.skip-prolog, [], False)))
+  seq/suspend(fn() event-step(src, Pstate(src.skip-prolog, [], False, [], 0)))
 
 fun event-step( src : list<char>, st : pstate ) : <exn,div|e> step<<exn|e>,xml-event>
   match next-event(src, st)
@@ -223,6 +229,75 @@ fun skip-doctype( src : list<char>, cs : list<char> ) : exn list<char>
       Nil -> src.parse-error(cs, "unterminated DOCTYPE")
   go(cs, 0)
 
+// The general entity declarations of a DOCTYPE (`<!ENTITY name "value">`;
+// `SYSTEM`/`PUBLIC` ones are external and recorded as `Nothing`). Character
+// references in values are replaced now; entity references when they are used.
+// The first declaration of a name counts.
+fun parse-entities( src : list<char>, at : list<char>, cs : list<char>, acc : list<(string, maybe<string>)> ) : exn list<(string, maybe<string>)>
+  if cs.starts("<!--") then src.parse-entities(at, pretend-decreasing(cs.drop(4).skip-past("-->")), acc)
+  elif cs.starts("<!ENTITY") then
+    val d = cs.drop(8).skip-ws
+    match d
+      Cons('%', rest) -> src.parse-entities(at, pretend-decreasing(rest.skip-past(">")), acc)   // a parameter entity
+      _ ->
+        val (name, rest) = src.parse-name(d)
+        val r = rest.skip-ws
+        match r
+          Cons(q, rest1) | q == '"' || q == '\'' ->
+            val (value, rest2) = src.until(rest1, q.string, "entity value")
+            val v = src.expand-char-refs(at, value)
+            val acc1 = if acc.any(fn((n, _)) n == name) then acc else Cons((name, Just(v)), acc)
+            src.parse-entities(at, pretend-decreasing(rest2.skip-past(">")), acc1)
+          _ ->
+            val acc1 = if acc.any(fn((n, _)) n == name) then acc else Cons((name, Nothing), acc)
+            src.parse-entities(at, pretend-decreasing(r.skip-past(">")), acc1)
+  else match cs
+    Cons('"', rest) -> src.parse-entities(at, pretend-decreasing(rest.skip-past("\"")), acc)
+    Cons('\'', rest) -> src.parse-entities(at, pretend-decreasing(rest.skip-past("'")), acc)
+    Cons(_, rest) -> src.parse-entities(at, rest, acc)
+    Nil -> acc.reverse
+
+// The names of the entities that a value refers to.
+fun entity-refs( v : string ) : list<string>
+  fun go( xs : list<char>, acc : list<string> ) : list<string>
+    match xs
+      Cons('&', rest) ->
+        val name = rest.take-while(fn(c) c != ';' && !c.is-ws && c != '&' && c != '<')
+        match rest.drop(name.length)
+          Cons(';', after) | !name.is-empty && name.head != Just('#') -> go(pretend-decreasing(after), Cons(name.string, acc))
+          _ -> go(rest, acc)
+      Cons(_, rest) -> go(rest, acc)
+      Nil -> acc
+  go(v.list, [])
+
+// An entity must not refer to itself, directly or through other entities.
+// (Entities that were checked already are remembered, so that a chain like
+// "billion laughs" takes linear time.)
+fun check-no-recursion( src : list<char>, at : list<char>, ents : list<(string, maybe<string>)> ) : exn ()
+  fun visit( name : string, path : list<string>, done : list<string> ) : <exn,div> list<string>
+    if done.any(fn(d) d == name) then done
+    elif path.any(fn(p) p == name) then src.parse-error(at, "the entity &" ++ name ++ "; refers to itself")
+    else match ents.lookup(fn(n) n == name)
+      Just(Just(v)) -> Cons(name, v.entity-refs.foldl(done, fn(d, r) visit(r, Cons(name, path), d)))
+      _ -> Cons(name, done)
+  pretend-no-div { ignore(ents.foldl([], fn(d, (n, _)) visit(n, [], d))) }
+
+// Replace character references (`&#65;`, `&#x41;`) but keep entity references.
+fun expand-char-refs( src : list<char>, at : list<char>, s : string ) : exn string
+  fun go( xs : list<char>, acc : list<char> ) : exn list<char>
+    match xs
+      Cons('&', Cons('#', rest)) ->
+        val digits = rest.take-while(fn(c) c != ';')
+        val code = match digits
+          Cons('x', hs) -> hs.string.parse-int(hex = True)
+          _ -> digits.string.parse-int
+        match (code, rest.drop(digits.length))
+          (Just(i), Cons(';', rest2)) -> go(pretend-decreasing(rest2), Cons(i.char, acc))
+          _ -> src.parse-error(at, "invalid character reference in an entity value")
+      Cons(c, rest) -> go(rest, Cons(c, acc))
+      Nil -> acc.reverse
+  go(s.list, []).string
+
 fun is-name-start( c : char ) : bool
   c.is-alpha || c == '_' || c == ':' || c.int >= 0x80
 
@@ -236,8 +311,27 @@ fun parse-name( src : list<char>, cs : list<char> ) : exn (string, list<char>)
       (n.string, cs.drop(n.length))
     _ -> src.parse-error(cs, "expected a name")
 
-// Replace entity and character references.
-fun unescape( src : list<char>, at : list<char>, s : string ) : exn string
+// The first reference to a declared entity in `cs`: the text before it, its name, and the text after it.
+fun find-entity-ref( cs : list<char>, ents : list<(string, maybe<string>)> ) : maybe<(list<char>, string, list<char>)>
+  fun go( xs : list<char>, before : list<char> ) : maybe<(list<char>, string, list<char>)>
+    match xs
+      Nil -> Nothing
+      Cons('&', rest) ->
+        val name = rest.take-while(fn(c) c != ';' && !c.is-ws && c != '&' && c != '<')
+        val nm = name.string
+        match rest.drop(name.length)
+          Cons(';', after) | ents.any(fn((n, _)) n == nm) -> Just((before.reverse, nm, after))
+          _ -> go(rest, Cons('&', before))
+      Cons(c, rest) -> go(rest, Cons(c, before))
+  if ents.is-nil then Nothing else go(cs, [])
+
+// Replace entity and character references. Declared entities (from the
+// DOCTYPE) are replaced by their (recursively expanded) text.
+fun unescape( src : list<char>, at : list<char>, s : string, ents : list<(string, maybe<string>)> = [] ) : exn string
+  src.unescape-at(at, s, ents, 0)
+
+fun unescape-at( src : list<char>, at : list<char>, s : string, ents : list<(string, maybe<string>)>, depth : int ) : exn string
+  if depth > 32 then src.parse-error(at, "entity expansion limit exceeded")
   fun go( xs : list<char>, acc : list<char> ) : exn list<char>
     match xs
       Nil -> acc.reverse
@@ -252,6 +346,14 @@ fun unescape( src : list<char>, at : list<char>, s : string ) : exn string
               "amp" -> '&'
               "quot" -> '"'
               "apos" -> '\''
+              n | ents.any(fn((k, _)) k == n) ->
+                match ents.lookup(fn(k) k == n)
+                  Just(Just(v)) ->
+                    val text = src.unescape-at(at, v, ents, pretend-decreasing(depth + 1))
+                    if text.count > max-expansion then src.parse-error(at, "entity expansion limit exceeded")
+                    if text.list.any(fn(x) x == '<') then src.parse-error(at, "the entity &" ++ n ++ "; contains '<', which is not allowed in an attribute value")
+                    return go(pretend-decreasing(rest2), text.list.reverse ++ acc)
+                  _ -> src.parse-error(at, "the external entity &" ++ n ++ "; is not loaded")
               n ->
                 val code = if n.starts-with("#x").is-just then n.slice.drop(2).string.parse-int(hex = True)
                            elif n.starts-with("#").is-just then n.slice.drop(1).string.parse-int
@@ -264,7 +366,7 @@ fun unescape( src : list<char>, at : list<char>, s : string ) : exn string
       Cons(c, rest) -> go(rest, Cons(c, acc))
   go(s.list, []).string
 
-fun parse-attrs( src : list<char>, cs : list<char>, acc : list<(string, string)> ) : exn (list<(string, string)>, list<char>)
+fun parse-attrs( src : list<char>, cs : list<char>, acc : list<(string, string)>, ents : list<(string, maybe<string>)> ) : exn (list<(string, string)>, list<char>)
   val cs1 = cs.skip-ws
   match cs1
     Cons(c, _) | c.is-name-start ->
@@ -277,8 +379,8 @@ fun parse-attrs( src : list<char>, cs : list<char>, acc : list<(string, string)>
             if rawtext.list.any(fn(x) x == '<') then src.parse-error(rest2, "'<' in an attribute value")
             if acc.any(fn((k, _)) k == name) then src.parse-error(cs1, "duplicate attribute " ++ name)
             // whitespace characters in attribute values are normalized to spaces
-            val value = src.unescape(rest2, rawtext.list.map(fn(x) if x == '\n' || x == '\t' || x == '\r' then ' ' else x).string)
-            src.parse-attrs(pretend-decreasing(rest3), Cons((name, value), acc))
+            val value = src.unescape(rest2, rawtext.list.map(fn(x) if x == '\n' || x == '\t' || x == '\r' then ' ' else x).string, ents)
+            src.parse-attrs(pretend-decreasing(rest3), Cons((name, value), acc), ents)
           r -> src.parse-error(r, "expected a quoted attribute value")
         r -> src.parse-error(r, "expected '=' after the attribute name")
     _ -> (acc.reverse, cs1)
@@ -301,7 +403,11 @@ fun next-event( src : list<char>, st : pstate ) : <exn,div> maybe<(xml-event, ps
         Just((CData-event(text), st(rest = rest1)))
       elif rest.starts("!DOCTYPE") then
         if st.seen-root || !st.open.is-nil then src.parse-error(cs, "DOCTYPE after the root element")
-        next-event(src, st(rest = src.skip-doctype(rest.drop(8))))
+        val after = src.skip-doctype(rest.drop(8))
+        val decl = rest.drop(8).take(rest.length - 8 - after.length)
+        val ents = src.parse-entities(cs, decl, [])
+        src.check-no-recursion(cs, ents)
+        next-event(src, st(rest = after, entities = ents))
       elif rest.starts("?") then
         val (target, rest1) = src.parse-name(rest.drop(1))
         if target.to-lower == "xml" then src.parse-error(cs, "an XML declaration is only allowed at the start")
@@ -313,18 +419,18 @@ fun next-event( src : list<char>, st : pstate ) : <exn,div> maybe<(xml-event, ps
           Cons('>', rest2) -> match st.open
             Cons(n, outer) ->
               if n != name then src.parse-error(rest, "</" ++ name ++ "> does not match <" ++ n ++ ">")
-              Just((End-element(name), Pstate(rest2, outer, True)))
+              Just((End-element(name), st(rest = rest2, open = outer, seen-root = True)))
             Nil -> src.parse-error(rest, "unexpected </" ++ name ++ ">")
           r -> src.parse-error(r, "expected '>'")
       else
         if st.open.is-nil && st.seen-root then src.parse-error(cs, "a second root element")
         val (name, rest1) = src.parse-name(rest)
-        val (attrs, rest2) = src.parse-attrs(rest1, [])
+        val (attrs, rest2) = src.parse-attrs(rest1, [], st.entities)
         match rest2
           Cons('/', Cons('>', rest3)) ->
             // an empty element: a start event now, and its end event next
-            Just((Start-element(name, attrs), Pstate(['<', '/'] ++ name.list ++ ['>'] ++ rest3, Cons(name, st.open), st.seen-root)))
-          Cons('>', rest3) -> Just((Start-element(name, attrs), Pstate(rest3, Cons(name, st.open), st.seen-root)))
+            Just((Start-element(name, attrs), st(rest = ['<', '/'] ++ name.list ++ ['>'] ++ rest3, open = Cons(name, st.open))))
+          Cons('>', rest3) -> Just((Start-element(name, attrs), st(rest = rest3, open = Cons(name, st.open))))
           r -> src.parse-error(r, "expected '>' or '/>'")
     _ ->
       val rawtext = cs.take-while(fn(c) c != '<')
@@ -334,7 +440,18 @@ fun next-event( src : list<char>, st : pstate ) : <exn,div> maybe<(xml-event, ps
         else src.parse-error(cs, "text outside the root element")
       else
         if rawtext.string.contains("]]>") then src.parse-error(cs, "']]>' in text")
-        Just((Text-event(src.unescape(cs, rawtext.string)), st(rest = rest)))
+        match rawtext.find-entity-ref(st.entities)
+          Nothing -> Just((Text-event(src.unescape(cs, rawtext.string, st.entities)), st(rest = rest)))
+          Just((before, ename, after)) ->
+            // a declared entity: its replacement text is parsed in place of the reference
+            val value = match st.entities.lookup(fn(n) n == ename)
+              Just(Just(v)) -> v
+              _ -> src.parse-error(cs, "the external entity &" ++ ename ++ "; is not loaded")
+            val total = st.expanded + value.count
+            if total > max-expansion then src.parse-error(cs, "entity expansion limit exceeded")
+            val st1 = st(rest = value.list ++ after ++ rest, expanded = total)
+            if before.is-empty then next-event(src, pretend-decreasing(st1))
+            else Just((Text-event(src.unescape(cs, before.string, st.entities)), st1))
 
 // ----------------------------------------------------------------------------
 // Building the tree

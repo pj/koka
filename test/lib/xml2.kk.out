@@ -1,0 +1,8 @@
+entities: <note from="Koka &amp; Co"><b>Best</b>, Koka &amp; Co © 2026</note>
+(Just("Koka & Co"),["Best"],"Best, Koka & Co \xA9 2026")
+undeclared: error: xml parse error at line 1, column 34: unknown entity &f;
+external: error: xml parse error at line 1, column 60: the external entity &ext; is not loaded
+markup in an attribute: error: xml parse error at line 1, column 40: the entity &m; contains '<', which is not allowed in an attribute value
+recursive: error: xml parse error at line 1, column 1: the entity &r; refers to itself
+recursive in an attribute: error: xml parse error at line 1, column 1: the entity &r; refers to itself
+billion laughs: error: xml parse error at line 7, column 9: entity expansion limit exceeded
