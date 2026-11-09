@@ -137,6 +137,18 @@ pub extern udp-set-broadcast( sock : any, enable : bool ) : ioc error<()>
   c  "kk_udp_set_broadcast"
   js "kk_udp_set_broadcast"
 
+pub extern udp-connect( sock : any, ip : string, port : int32 ) : ioc error<()>
+  c  "kk_udp_connect"
+  js "kk_udp_connect"
+
+pub extern udp-connect-setup( evloop : any, sock : any, ip : string, port : int32, cb : error<()> -> ioc () ) : ioc error<() -> ioc ()>
+  c  "kk_udp_connect_setup"
+  js "kk_udp_connect_setup"
+
+pub extern udp-peer-address( sock : any ) : ioc (string, int)
+  c  "kk_udp_peer_address"
+  js "kk_udp_peer_address"
+
 pub extern udp-set-membership( sock : any, group : string, iface : string, join : bool ) : ioc error<()>
   c  "kk_udp_set_membership"
   js "kk_udp_set_membership"

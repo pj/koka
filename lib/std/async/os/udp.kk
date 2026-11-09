@@ -58,13 +58,39 @@ fun is-ip-address( s : string ) : bool
 // name is resolved to an address of the same family (IPv4 or IPv6) as the
 // socket.
 pub fun send-to( s : udp-socket, data : bytes, host : string, port : int ) : <async,exn,net> ()
-  val ip = if host.is-ip-address then host else
+  val ip = s.resolve-for(host)
+  with try-exn-prepend("udp send to " ++ host ++ ":" ++ port.show)
+  await("udp-send", fn(evloop, resume) udp-send-setup(evloop, s.hnd, data, ip, port.int32, resume))
+
+// The address for `host`, of the same family (IPv4 or IPv6) as the socket.
+fun resolve-for( s : udp-socket, host : string ) : <async,exn,net> string
+  if host.is-ip-address then host else
     val ipv6 = s.local-address.fst.list.any(fn(c) c == ':')
     match resolve-host(host).filter(fn(a) a.list.any(fn(c) c == ':') == ipv6)
       Cons(a, _) -> a
       Nil -> throw("udp: no " ++ (if ipv6 then "IPv6" else "IPv4") ++ " address found for " ++ host.show)
-  with try-exn-prepend("udp send to " ++ host ++ ":" ++ port.show)
-  await("udp-send", fn(evloop, resume) udp-send-setup(evloop, s.hnd, data, ip, port.int32, resume))
+
+// Connect the socket to a peer: `send` then sends to it, and only datagrams
+// from it are received (and errors such as an unreachable port can be reported).
+pub fun connect( s : udp-socket, host : string, port : int ) : <async,exn,net> ()
+  val ip = s.resolve-for(host)
+  with try-exn-prepend("udp connect to " ++ host ++ ":" ++ port.show)
+  if net-has-native-tls() then  // Node.js: connecting is asynchronous
+    await("udp-connect", fn(evloop, resume) udp-connect-setup(evloop, s.hnd, ip, port.int32, resume))
+  else async-ioc { udp-connect(s.hnd, ip, port.int32) }.untry
+
+// Disconnect a connected socket (it can then send to and receive from any address again).
+pub fun disconnect( s : udp-socket ) : <async,exn> ()
+  async-ioc { udp-connect(s.hnd, "", 0.int32) }.untry
+
+// Send a datagram to the peer of a connected socket.
+pub fun send( s : udp-socket, data : bytes ) : <async,exn> ()
+  with try-exn-prepend("udp send")
+  await("udp-send", fn(evloop, resume) udp-send-setup(evloop, s.hnd, data, "", 0.int32, resume))
+
+// The `(ip, port)` of the connected peer, or `("", 0)` if the socket is not connected.
+pub fun remote-address( s : udp-socket ) : async (string, int)
+  async-ioc { udp-peer-address(s.hnd) }
 
 // Wait for the next datagram; returns `(data, sender-ip, sender-port)`.
 pub fun receive-from( s : udp-socket ) : <async,exn> (bytes, string, int)

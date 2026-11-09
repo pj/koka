@@ -645,8 +645,10 @@ kk_std_core_exn__error kk_udp_send_setup( kk_uv_loop_t loop, kk_box_t bu, kk_byt
   kk_udp_t* u = kk_udp_unbox(bu, ctx);
   kk_box_drop(bu, ctx);
   struct sockaddr_storage addr;
-  int err = kk_net_sockaddr(ip, port, &addr, ctx);
-  kk_string_drop(ip, ctx);
+  // an empty `ip` sends to the connected peer
+  const bool connected = (kk_string_len_borrow(ip, ctx) == 0);
+  int err = (connected ? 0 : kk_net_sockaddr(ip, port, &addr, ctx));
+  if (connected) kk_string_drop(ip, ctx);
   if (err == 0 && u->closing) err = UV_ECANCELED;
   if (err != 0) { kk_bytes_drop(data, ctx); kk_function_drop(cb, ctx); return kk_error_from_uv_errno(err, ctx); }
   kk_udp_send_t* req;
@@ -657,7 +659,7 @@ kk_std_core_exn__error kk_udp_send_setup( kk_uv_loop_t loop, kk_box_t bu, kk_byt
   const uint8_t* base = kk_bytes_buf_borrow(data, &len, ctx);
   uv_buf_t bufs[1];
   bufs[0] = uv_buf_init((char*)base, (unsigned int)len);
-  err = uv_udp_send(&req->req, &u->udp, bufs, 1, (const struct sockaddr*)&addr, &kk_udp_send_cb);
+  err = uv_udp_send(&req->req, &u->udp, bufs, 1, (connected ? NULL : (const struct sockaddr*)&addr), &kk_udp_send_cb);
   if (err != 0) {
     kk_bytes_drop(req->data, ctx);
     req->data = kk_bytes_empty();
@@ -697,6 +699,52 @@ kk_std_core_exn__error kk_udp_set_broadcast( kk_box_t bu, bool enable, kk_contex
   int err = uv_udp_set_broadcast(&u->udp, enable ? 1 : 0);
   if (err != 0) return kk_error_from_uv_errno(err, ctx);
   return kk_result_ok(kk_unit_box(kk_Unit), ctx);
+}
+
+// Connect to a peer (or disconnect with an empty `ip`): datagrams are then sent
+// to it without an address, and only datagrams from it are received.
+kk_std_core_exn__error kk_udp_connect( kk_box_t bu, kk_string_t ip, int32_t port, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  int err;
+  if (kk_string_len_borrow(ip, ctx) == 0) {
+    kk_string_drop(ip, ctx);
+    err = uv_udp_connect(&u->udp, NULL);
+    if (err == UV_ENOTCONN) err = 0;
+  }
+  else {
+    struct sockaddr_storage addr;
+    err = kk_net_sockaddr(ip, port, &addr, ctx);
+    if (err == 0) err = uv_udp_connect(&u->udp, (const struct sockaddr*)&addr);
+  }
+  if (err != 0) return kk_error_from_uv_errno(err, ctx);
+  return kk_result_ok(kk_unit_box(kk_Unit), ctx);
+}
+
+kk_std_core_exn__error kk_udp_connect_setup( kk_uv_loop_t loop, kk_box_t bu, kk_string_t ip, int32_t port, kk_function_t cb, kk_context_t* ctx ) {
+  kk_unused(loop); kk_box_drop(bu, ctx); kk_string_drop(ip, ctx); kk_function_drop(cb, ctx);
+  return kk_error_from_uv_errno(UV_ENOTSUP, ctx);   // only used on Node.js
+}
+
+// The address of the connected peer, or `("", 0)`.
+kk_std_core_types__tuple2 kk_udp_peer_address( kk_box_t bu, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  struct sockaddr_storage addr;
+  int len = sizeof(addr);
+  char ipbuf[64] = "";
+  int port = 0;
+  if (uv_udp_getpeername(&u->udp, (struct sockaddr*)&addr, &len) == 0) {
+    if (addr.ss_family == AF_INET6) {
+      uv_ip6_name((const struct sockaddr_in6*)&addr, ipbuf, sizeof(ipbuf));
+      port = ntohs(((const struct sockaddr_in6*)&addr)->sin6_port);
+    }
+    else {
+      uv_ip4_name((const struct sockaddr_in*)&addr, ipbuf, sizeof(ipbuf));
+      port = ntohs(((const struct sockaddr_in*)&addr)->sin_port);
+    }
+  }
+  return kk_std_core_types__new_Tuple2(kk_string_box(kk_string_alloc_from_utf8(ipbuf, ctx)), kk_integer_box(kk_integer_from_int(port, ctx), ctx), ctx);
 }
 
 // Join (or leave) the multicast `group`, on the interface with address `iface` ("" for the default).
