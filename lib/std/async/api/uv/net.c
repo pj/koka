@@ -699,6 +699,44 @@ kk_std_core_exn__error kk_udp_set_broadcast( kk_box_t bu, bool enable, kk_contex
   return kk_result_ok(kk_unit_box(kk_Unit), ctx);
 }
 
+// Join (or leave) the multicast `group`, on the interface with address `iface` ("" for the default).
+kk_std_core_exn__error kk_udp_set_membership( kk_box_t bu, kk_string_t group, kk_string_t iface, bool join, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  kk_ssize_t ilen;
+  const char* ip = kk_string_cbuf_borrow(iface, &ilen, ctx);
+  int err = uv_udp_set_membership(&u->udp, kk_string_cbuf_borrow(group, NULL, ctx), (ilen == 0 ? NULL : ip), join ? UV_JOIN_GROUP : UV_LEAVE_GROUP);
+  kk_string_drop(group, ctx);
+  kk_string_drop(iface, ctx);
+  if (err != 0) return kk_error_from_uv_errno(err, ctx);
+  return kk_result_ok(kk_unit_box(kk_Unit), ctx);
+}
+
+kk_std_core_exn__error kk_udp_set_multicast_ttl( kk_box_t bu, int32_t ttl, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  int err = uv_udp_set_multicast_ttl(&u->udp, ttl);
+  if (err != 0) return kk_error_from_uv_errno(err, ctx);
+  return kk_result_ok(kk_unit_box(kk_Unit), ctx);
+}
+
+kk_std_core_exn__error kk_udp_set_multicast_loop( kk_box_t bu, bool enable, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  int err = uv_udp_set_multicast_loop(&u->udp, enable ? 1 : 0);
+  if (err != 0) return kk_error_from_uv_errno(err, ctx);
+  return kk_result_ok(kk_unit_box(kk_Unit), ctx);
+}
+
+kk_std_core_exn__error kk_udp_set_multicast_interface( kk_box_t bu, kk_string_t iface, kk_context_t* ctx ) {
+  kk_udp_t* u = kk_udp_unbox(bu, ctx);
+  kk_box_drop(bu, ctx);
+  int err = uv_udp_set_multicast_interface(&u->udp, kk_string_cbuf_borrow(iface, NULL, ctx));
+  kk_string_drop(iface, ctx);
+  if (err != 0) return kk_error_from_uv_errno(err, ctx);
+  return kk_result_ok(kk_unit_box(kk_Unit), ctx);
+}
+
 // TLS is implemented in Koka on top of the mbedtls engine for the C backend (see `tls.c`)
 kk_std_core_exn__error kk_net_tls_connect_setup( kk_uv_loop_t loop, kk_string_t host, int32_t port, bool verify, kk_string_t ca,
                                                  kk_string_t cert, kk_string_t key, kk_string_t alpn, kk_function_t cb, kk_context_t* ctx ) {

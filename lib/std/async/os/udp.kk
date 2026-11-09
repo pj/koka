@@ -74,6 +74,28 @@ pub fun receive-from( s : udp-socket ) : <async,exn> (bytes, string, int)
 pub fun set-broadcast( s : udp-socket, enable : bool = True ) : <async,exn> ()
   async-ioc { udp-set-broadcast(s.hnd, enable) }.untry
 
+// Join the multicast `group` (like `"239.255.0.1"` or `"ff02::1"`) so that
+// datagrams sent to it arrive on this socket; `iface` is the address of the
+// local interface to use (`""` lets the system choose).
+pub fun join-multicast( s : udp-socket, group : string, iface : string = "" ) : <async,exn> ()
+  async-ioc { udp-set-membership(s.hnd, group, iface, True) }.untry
+
+// Leave a multicast group.
+pub fun leave-multicast( s : udp-socket, group : string, iface : string = "" ) : <async,exn> ()
+  async-ioc { udp-set-membership(s.hnd, group, iface, False) }.untry
+
+// The number of network hops (time to live) of multicast datagrams sent (1 by default: the local network).
+pub fun set-multicast-ttl( s : udp-socket, ttl : int ) : <async,exn> ()
+  async-ioc { udp-set-multicast-ttl(s.hnd, ttl.int32) }.untry
+
+// Whether multicast datagrams sent from this host also arrive at its own sockets (on by default).
+pub fun set-multicast-loop( s : udp-socket, enable : bool = True ) : <async,exn> ()
+  async-ioc { udp-set-multicast-loop(s.hnd, enable) }.untry
+
+// The local interface (by its address) that multicast datagrams are sent from.
+pub fun set-multicast-interface( s : udp-socket, iface : string ) : <async,exn> ()
+  async-ioc { udp-set-multicast-interface(s.hnd, iface) }.untry
+
 // The local `(ip, port)` the socket is bound to.
 pub fun udp-socket/local-address( s : udp-socket ) : async (string, int)
   async-ioc { udp-address(s.hnd) }

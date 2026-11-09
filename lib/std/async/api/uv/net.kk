@@ -136,3 +136,19 @@ pub extern udp-address( sock : any ) : ioc (string, int)
 pub extern udp-set-broadcast( sock : any, enable : bool ) : ioc error<()>
   c  "kk_udp_set_broadcast"
   js "kk_udp_set_broadcast"
+
+pub extern udp-set-membership( sock : any, group : string, iface : string, join : bool ) : ioc error<()>
+  c  "kk_udp_set_membership"
+  js "kk_udp_set_membership"
+
+pub extern udp-set-multicast-ttl( sock : any, ttl : int32 ) : ioc error<()>
+  c  "kk_udp_set_multicast_ttl"
+  js "kk_udp_set_multicast_ttl"
+
+pub extern udp-set-multicast-loop( sock : any, enable : bool ) : ioc error<()>
+  c  "kk_udp_set_multicast_loop"
+  js "kk_udp_set_multicast_loop"
+
+pub extern udp-set-multicast-interface( sock : any, iface : string ) : ioc error<()>
+  c  "kk_udp_set_multicast_interface"
+  js "kk_udp_set_multicast_interface"
