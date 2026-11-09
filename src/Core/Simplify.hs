@@ -243,9 +243,15 @@ topDown (Case [Case scruts0 branches0] branches1) | doesNotDuplicate
     pushCaseG branches (Guard guard expr)
       = Guard guard (Case [expr] branches)
 
+    -- Pushing the outer case into the inner branches copies the outer branches
+    -- into every inner branch, even into the ones that simplify (which still
+    -- select one of them). For a chain like `(a && b) || (c && d) || ...` the
+    -- outer `else` is the rest of the chain, so the code doubled with every
+    -- clause; only do this when the copied branches are small.
     doesNotDuplicate
       = hasSingleBranch branches0 ||
-        length (filter (simplifiesOn branches1) branches0) + 1 >= length branches0
+        (length (filter (simplifiesOn branches1) branches0) + 1 >= length branches0
+         && sizeOfExpr (Case [] branches1) <= maxCaseOfCaseCopy)
 
     hasSingleBranch :: [Branch] -> Bool
     hasSingleBranch branches
@@ -978,3 +984,8 @@ traceS msg
   = do env <- getEnv
        trace ("Core.Simplify: " ++ concat (intersperse "." (map show (reverse (currentDef env)))) ++ ": " ++ msg) $
          return ()
+
+-- The largest outer branches that case-of-case copies into several inner branches.
+maxCaseOfCaseCopy :: Int
+maxCaseOfCaseCopy = 30
+
