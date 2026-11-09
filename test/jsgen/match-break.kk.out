@@ -1,0 +1,8 @@
+later S!H 50
+kept H 1
+True
+big S! 500
+kept H 1
+True
+none S! 0
+False

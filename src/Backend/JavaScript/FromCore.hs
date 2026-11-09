@@ -15,7 +15,7 @@ import Lib.Trace
 import Control.Applicative hiding (empty)
 import Control.Monad
 import qualified Control.Monad.Fail as F
-import Data.List ( intersperse, partition )
+import Data.List ( intersperse, partition, nubBy )
 import Data.Char
 -- import Data.Maybe
 -- import Data.Monoid ( mappend )
@@ -127,7 +127,9 @@ genModule buildType mbMain imports core
     importDecls :: [Doc]
     importDecls
       = [text "import * as" <+> dname <+> text "from" <+> squotes (dpath <.> text ".mjs") <.> semi
-        | (dpath,dname) <- externalImports ++ normalImports]
+        | (dpath,dname) <- nubBy (\(_,n1) (_,n2) -> show n1 == show n2) (externalImports ++ normalImports)]
+        -- a module can be imported twice (e.g. a `pub import` of std/core and an explicit
+        -- import in the main module); JS rejects a duplicate binding
 
     normalImports :: [(Doc,Doc)]
     normalImports
@@ -229,8 +231,9 @@ tryFunDef name comment expr
     genFunDef' name params comm body
       = do let args = map ( ppName . getName ) params
                isTailCall = body `isTailCalling` name
+           body'   <- if isTailCall then captureByValue body else return body
            bodyDoc <- (if isTailCall then withStatement else id)
-                      (genStat (ResultReturn (Just name) params) body)
+                      (genStat (ResultReturn (Just name) params) body')
            return   $ text "function" <+> ppName (unqualify name)
                                        <.> tupled args
                                       <+> comm
@@ -239,6 +242,65 @@ tryFunDef name comment expr
                                               else debugComment ("genFunDef: no tail calls to " ++ show name ++ " found")
                                                 <.> block bodyDoc
                                           )
+
+-- | In a function that becomes a `tailcall` loop, the parameters and local variables are
+-- overwritten by the next iteration, while JS closures capture variables by reference.
+-- So every lambda in the body captures its local free variables by value, by wrapping it
+-- in an application: `(function(x){ return <lambda>; })(x)`. (Koka variables are only
+-- assigned once per iteration, so the value at creation is the one the lambda must see.)
+-- Locally recursive definitions are left alone: they are not assigned yet when their
+-- own lambda is created.
+captureByValue :: Expr -> Asm Expr
+captureByValue body
+  = go body
+  where
+    recNames = S.fromList [defTName d | DefRec ds <- letGroups body, d <- ds]
+
+    go expr
+      = case expr of
+          Lam _ _ _
+            -> do let captured = filter (\tn -> not (isQualified (getName tn)) && not (S.member tn recNames))
+                                        (tnamesList (fv expr))
+                  if null captured
+                    then return expr
+                    else do ns <- mapM (newVarName . show) captured
+                            let cnames = [TName cn tp | (cn,TName _ tp) <- zip ns captured]
+                                sub    = [(n,Var cn InfoNone) | (n,cn) <- zip captured cnames]
+                            return $ App (Lam cnames typeTotal (sub |~> expr)) [Var arg InfoNone | arg <- captured]
+          App f args    -> do f' <- go f
+                              args' <- mapM go args
+                              return (App f' args')
+          TypeLam tvs e -> fmap (TypeLam tvs) (go e)
+          TypeApp e tps -> fmap (\e' -> TypeApp e' tps) (go e)
+          Let dgs e     -> do dgs' <- mapM goDefGroup dgs
+                              e'   <- go e
+                              return (Let dgs' e')
+          Case es bs    -> do es' <- mapM go es
+                              bs' <- mapM goBranch bs
+                              return (Case es' bs')
+          _             -> return expr
+
+    goDefGroup (DefNonRec d) = fmap DefNonRec (goDef d)
+    goDefGroup (DefRec ds)   = return (DefRec ds)   -- see above
+    goDef d = do e' <- go (defExpr d)
+                 return d{ defExpr = e' }
+    goBranch (Branch pats grds)
+      = do grds' <- mapM goGuard grds
+           return (Branch pats grds')
+    goGuard (Guard t e)
+      = do t' <- go t
+           e' <- go e
+           return (Guard t' e')
+
+    letGroups expr
+      = case expr of
+          Lam _ _ e     -> letGroups e
+          App f args    -> concatMap letGroups (f:args)
+          TypeLam _ e   -> letGroups e
+          TypeApp e _   -> letGroups e
+          Let dgs e     -> dgs ++ concatMap (letGroups . defExpr) (flattenDefGroups dgs) ++ letGroups e
+          Case es bs    -> concatMap letGroups es ++ [dg | Branch _ gs <- bs, Guard t e <- gs, dg <- letGroups t ++ letGroups e]
+          _             -> []
 
 ---------------------------------------------------------------------------------
 -- Generate value constructors for each defined type
@@ -481,7 +543,9 @@ genMatch result scrutinees branches
   = fmap (debugWrap "genMatch") $ do
     case branches of
         []  -> fail ("Backend.JavaScript.FromCore.genMatch: no branch in match statement: " ++ show(scrutinees))
-        [b] -> fmap snd $ genBranch True result scrutinees b
+        -- with several guards, an earlier guard must jump past the later ones (regular case)
+        [b] | length (branchGuards b) == 1
+            -> fmap snd $ genBranch lastOk result scrutinees b
 
        -- Special handling of return related cases - would be nice to get rid of it
         [ Branch [p1] [Guard t1 (App (Var tn _) [r1])], Branch [p2] [Guard t2 e2] ]
@@ -521,7 +585,7 @@ genMatch result scrutinees branches
         bs
            | all (\b-> length (branchGuards   b) == 1) bs
           && all (\b->isExprTrue $ guardTest $ head $ branchGuards b) bs
-          -> do xs <- mapM (withStatement . genBranch True result scrutinees) bs
+          -> do xs <- mapM (withStatement . genBranch lastOk result scrutinees) bs
                 return $  debugWrap "genMatch: guard-free case"
                        $  hcat  ( map (\(conds,d)-> text "if" <+> parens (conjunction conds)
                                                              <+> block d <-> text "else "
@@ -536,7 +600,7 @@ genMatch result scrutinees branches
                                                         , ResultAssign n (Just $ newName "match")
                                                         )
                 bs <- mapM (withStatement . genBranch False result' scrutinees) (init branches)
-                b  <-      (withStatement . genBranch True  result' scrutinees) (last branches)
+                b  <-      (withStatement . genBranch lastOk result' scrutinees) (last branches)
                 let ds = map (\(cds,stmts)-> if null cds
                                                   then stmts
                                                   else text "if" <+> parens (conjunction cds)
@@ -546,6 +610,12 @@ genMatch result scrutinees branches
                 return $ debugWrap "genMatch: regular case"
                        $ labelF (vcat ds <-> d)
   where
+    -- the last branch may leave out the `break` only to a label introduced by this match:
+    -- code may follow the match inside an enclosing labeled block
+    lastOk = case result of
+               ResultAssign _ (Just _) -> False
+               _                       -> True
+
     -- | Generates a statement for a branch with given return context
     genBranch :: Bool -> Result -> [Doc] -> Branch -> Asm ([ConditionDoc], Doc)
     -- Regular catch-all branch generation

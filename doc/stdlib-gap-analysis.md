@@ -471,13 +471,35 @@ backends and diffs the output against its `.out` file.
   also overflowed the 512 KiB stacks of worker threads (a waiting thread
   runs other tasks on its own stack); workers now have 16 MiB stacks and
   helping is limited to 64 levels (`test/lib/task-nested`).
-* **The JS backend passed the wrong arguments to a continuation** (worked
-  around). In `serve-connection` (std/async/os/http), an effectful call
-  (`collect-body`) inside `val kept = match res.body-writer ...` with guarded
-  branches resumed, after suspending, a continuation that received its
-  arguments in the wrong positions (`write_message` got `undefined` for the
-  body). The C backend was correct. Moving the code into its own function
-  avoids it; no small reproduction yet.
+* **The JS backend ran the next branch of a match after an inner match**
+  (fixed in this fork). A match statement whose result goes to an enclosing
+  labeled block (`match: { ... break match; }`) left out the `break` in its
+  last branch, which is only right for the match that introduced the label.
+  A branch ending in another match (such as the check for a yielding effect
+  operation after a call) then fell through into the following branches.
+  Seen as `serve-connection` passing `undefined` as a response body
+  (`test/jsgen/match-break`). A single branch with several guards had no
+  label at all, so a later guard overwrote the result of an earlier one
+  (`test/cgen/match-guard-assign` failed on JS).
+* **JS closures created in a tail-call loop saw later iterations** (fixed in
+  this fork). A self tail-recursive function becomes a `tailcall: while(1)`
+  loop that overwrites its parameters and `var`s, and JS closures capture
+  variables by reference. Only lambdas passed directly as tail-call
+  arguments were captured by value; one bound earlier in the body (as in the
+  TRMC form of a `map`) saw the values of the last iteration. At `-O2`,
+  `wait-signal` with a list of signals crashed on `null.head` when a signal
+  arrived. Every lambda in such a loop now captures its local variables by
+  value (`test/jsgen/tailcall-capture`).
+* **Other JS backend differences** (fixed in this fork): a main module that
+  imports a module std/core already `pub import`s (`std/core/bslice`)
+  declared it twice, which JS rejects; `parse-int` accepted exponents of 10^9
+  and more and then failed in BigInt (C returns `Nothing`); `trace` printed
+  to stdout instead of stderr on Node.
+* `test/lazy/queue/physicists-stack` segfaults on JS on macOS: Node is run
+  with `--stack-size=100000` (~100 MB), but the main thread's stack is 8 MB,
+  so deep recursion crashes instead of raising `RangeError`. (Not fixed; the
+  float-formatting tests `ddouble1-3`, `double2`, `double4` and the C-only
+  `std/os/task` tests also differ on JS, as expected.)
 * **Exponential code size for long boolean chains** (fixed in this fork). A
   function that is one `||` chain of `&&` clauses generated C code that doubled
   with every clause (10 clauses: 14 MB of C, 20 minutes in clang). The

@@ -107,9 +107,7 @@ pub fun stream-response( status : int, content-type : string, writer : body-writ
   Http-response(status, reason-phrase(status), headers.set-header("Content-Type", content-type), bytes/empty, "HTTP/1.1", Just(writer))
 
 // Send a response (streamed in chunks if it has a body writer, the method is
-// not HEAD, and the client speaks HTTP/1.1). (This is a separate function:
-// written inline in `serve-connection`, the JavaScript backend passed the
-// wrong arguments to the continuation after a body writer suspended.)
+// not HEAD, and the client speaks HTTP/1.1).
 fun send-response( sock : net-stream, method : string, version : string, status-line : string, hs : headers, res : http-response ) : <async,exn,ndet> ()
   match res.body-writer
     Nothing -> write-message(sock, status-line, hs, if method == "HEAD" then bytes/empty else res.body)
