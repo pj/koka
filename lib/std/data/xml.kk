@@ -64,6 +64,12 @@ pub fun attr( x : xml, key : string ) : maybe<string>
     Element(_, attrs, _) -> attrs.lookup(fn(k) k == key)
     _ -> Nothing
 
+// The attributes of an element (empty for other nodes).
+pub fun attributes( x : xml ) : list<(string, string)>
+  match x
+    Element(_, attrs, _) -> attrs
+    _ -> []
+
 // The child elements named `name` (all child elements for `"*"`).
 pub fun elements( x : xml, name : string = "*" ) : list<xml>
   match x
@@ -336,13 +342,86 @@ fun next-event( src : list<char>, st : pstate ) : <exn,div> maybe<(xml-event, ps
 
 // Parse a document and return its root element (comments and processing
 // instructions outside the root are dropped). Raises an exception with the
-// line and column for a document that is not well formed.
-pub fun parse-xml( s : string ) : exn xml
+// line and column for a document that is not well formed. With `namespaces`,
+// names are expanded to `{uri}local` (see `expand-namespaces`).
+pub fun parse-xml( s : string, namespaces : bool = False ) : exn xml
   val evs = pretend-no-div { xml-events(s).list }
-  match build-nodes(evs, [])
+  val root = match build-nodes(evs, [])
     (roots, _) -> match roots.filter(fn(x) x.is-named("*"))
-      [root] -> root
+      [r] -> r
       _ -> throw("xml: no root element")
+  if namespaces then root.expand-namespaces else root
+
+// ----------------------------------------------------------------------------
+// Namespaces
+// ----------------------------------------------------------------------------
+
+val xml-namespace = "http://www.w3.org/XML/1998/namespace"
+val xmlns-namespace = "http://www.w3.org/2000/xmlns/"
+
+// Resolve namespace prefixes: element and attribute names become `{uri}local`
+// using the `xmlns` and `xmlns:prefix` declarations in scope (attributes
+// without a prefix have no namespace, and names in no namespace stay plain).
+// The declarations themselves are kept, as `{http://www.w3.org/2000/xmlns/}prefix`
+// (and `xmlns` for the default). Raises an exception for an undeclared prefix.
+pub fun expand-namespaces( x : xml ) : exn xml
+  x.expand-in([("xml", xml-namespace)])
+
+fun expand-in( x : xml, scope : list<(string, string)> ) : exn xml
+  match x
+    Element(n, attrs, cs) ->
+      val decls = attrs.filter-map fn((k, v))
+        if k == "xmlns" then Just(("", v))
+        elif k.starts-with("xmlns:").is-just then Just((k.slice.drop(6).string, v))
+        else Nothing
+      val scope1 = decls ++ scope
+      val attrs1 = attrs.map fn((k, v))
+        if k == "xmlns" then (k, v)
+        elif k.starts-with("xmlns:").is-just then ("{" ++ xmlns-namespace ++ "}" ++ k.slice.drop(6).string, v)
+        else (k.expand-name(scope1, False), v)
+      match attrs1.map(fst).find-dup
+        Just(d) -> throw("xml: duplicate attribute " ++ d ++ " after resolving namespaces")
+        Nothing -> ()
+      Element(n.expand-name(scope1, True), attrs1, cs.map(fn(c) pretend-decreasing(c).expand-in(scope1)))
+    _ -> x
+
+fun find-dup( xs : list<string> ) : maybe<string>
+  match xs
+    Cons(x, rest) -> if rest.any(fn(y) y == x) then Just(x) else rest.find-dup
+    Nil -> Nothing
+
+fun expand-name( n : string, scope : list<(string, string)>, is-element : bool ) : exn string
+  match n.find(":")
+    Just(sl) ->
+      val pre = sl.before.string
+      match scope.lookup(fn(p) p == pre)
+        Just(uri) -> "{" ++ uri ++ "}" ++ sl.after.string
+        Nothing -> throw("xml: undeclared namespace prefix " ++ pre.show ++ " in " ++ n.show)
+    Nothing ->
+      if !is-element then n
+      else match scope.lookup(fn(p) p == "")
+        Just(uri) | !uri.is-empty -> "{" ++ uri ++ "}" ++ n
+        _ -> n
+
+// The namespace of an expanded name `{uri}local` (`""` for a plain name).
+pub fun namespace-uri( name : string ) : string
+  if name.starts-with("{").is-nothing then ""
+  else match name.find("}")
+    Just(sl) -> sl.before.string.slice.drop(1).string
+    Nothing -> ""
+
+// The local part of a name: `local` for `{uri}local` and for `prefix:local`.
+pub fun local-name( name : string ) : string
+  val s1 = match name.find("}")
+    Just(sl) | name.starts-with("{").is-just -> sl.after.string
+    _ -> name
+  match s1.find(":")
+    Just(sl) -> sl.after.string
+    Nothing -> s1
+
+// The child elements with namespace `uri` and local name `local`.
+pub fun elements-ns( x : xml, uri : string, local : string ) : list<xml>
+  x.elements.filter(fn(c) c.tag.namespace-uri == uri && c.tag.local-name == local)
 
 // Parse a document, returning `Nothing` if it is not well formed.
 pub fun try-parse-xml( s : string ) : maybe<xml>

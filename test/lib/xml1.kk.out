@@ -38,3 +38,12 @@ comment dashes: error: xml parse error at line 1, column 5: '--' inside a commen
 multi-line error: error: xml parse error at line 3, column 4: </c> does not match <b>
 attribute whitespace: <a x="one two"/>
 bom and decl: <a/>
+{http://www.w3.org/2005/Atom}feed
+["{http://www.w3.org/2005/Atom}title","{urn:media}thumb","entry"]
+Just((Just("10"),Just("5")))
+["t"]
+("urn:x","a","a","")
+(1,1)
+xml: undeclared namespace prefix "a" in "a:b"
+True
+[("{http://www.w3.org/XML/1998/namespace}lang","en")]
