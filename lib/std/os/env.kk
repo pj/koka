@@ -15,6 +15,9 @@ module std/os/env
 
 import std/os/path
 
+extern import
+  c file "env-inline.c"
+
 pub alias env = list<(string,string)>
 
 
@@ -45,11 +48,11 @@ pub fun unset-env( name : string ) : io ()
   os-unset-env(name)
 
 extern os-set-env( name : string, value : string ) : io ()
-  c  inline "(setenv(kk_string_cbuf_borrow(#1,NULL,kk_context()),kk_string_cbuf_borrow(#2,NULL,kk_context()),1), kk_string_drop(#1,kk_context()), kk_string_drop(#2,kk_context()), kk_Unit)"
+  c  "kk_os_set_env"
   js inline "(typeof process !== 'undefined' ? (process.env[#1] = #2, $std_core_types.Unit) : $std_core_types.Unit)"
 
 extern os-unset-env( name : string ) : io ()
-  c  inline "(unsetenv(kk_string_cbuf_borrow(#1,NULL,kk_context())), kk_string_drop(#1,kk_context()), kk_Unit)"
+  c  "kk_os_unset_env"
   js inline "(typeof process !== 'undefined' ? (delete process.env[#1], $std_core_types.Unit) : $std_core_types.Unit)"
 
 val argv : delayed<<ndet>,list<string>> =

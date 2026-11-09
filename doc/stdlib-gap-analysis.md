@@ -503,6 +503,20 @@ backends and diffs the output against its `.out` file.
   socket is emulated: the peer is remembered, sends go to it, and datagrams
   from others are dropped. Found by the first CI runs on Linux
   (`test/net/udp3`).
+* **Windows (first CI runs, 2026-11-09)**: the compiler builds and the suite
+  runs (MSVC/clang-cl, vcpkg). Fixed so far: libuv needs `synchronization.lib`;
+  the stdlib's zlib/sqlite/brotli/zstd/mbedtls come from vcpkg there; vcpkg
+  packages are installed before the tests (installs during a test printed
+  into its output). vcpkg's static zlib is `zs.lib`. Koka compiles C
+  as C++ (`-TP`) with MSVC, which rejected a `goto` past declarations in
+  `std/os/process`; `setenv`/`unsetenv` became `_putenv_s` on Windows. All
+  stdlib modules now compile as Windows C++ (checked with MinGW `g++ -x c++`
+  and the libraries' headers). Tests run sequentially there (`--seq`), since
+  parallel builds of shared test modules collide ("permission denied").
+  Open: output differences in a few tests (`num-rational1`, `xml1`/`xml2`).
+* **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
+  named `mbedcrypto` before the TLS module named `mbedtls`, which links on
+  macOS but not on Linux; it now names all three in order.
 * `test/lazy/queue/physicists-stack` segfaults on JS on macOS: Node is run
   with `--stack-size=100000` (~100 MB), but the main thread's stack is 8 MB,
   so deep recursion crashes instead of raising `RangeError`. (Not fixed; the

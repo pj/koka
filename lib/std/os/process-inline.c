@@ -161,6 +161,15 @@ static kk_std_core_exn__error kk_os_spawn_win( kk_string_t cmd, kk_vector_t args
   kk_os_win_io_t errio = { NULL, NULL, 0, { NULL, 0, 0 } };
   HANDLE in_r = NULL, out_w = NULL, err_w = NULL;
   bool done = false;
+  // (declared before the first `goto`: this is also compiled as C++)
+  SECURITY_ATTRIBUTES sa;
+  STARTUPINFOA si;
+  PROCESS_INFORMATION pi;
+  kk_ssize_t cwdlen = 0;
+  const char* ccwd = NULL;
+  kk_ssize_t inlen = 0;
+  HANDLE tw = NULL;
+  HANDLE tr = NULL;
   // the command line
   kk_os_win_quote(&cl, kk_string_cbuf_borrow(cmd, NULL, ctx));
   kk_ssize_t nargs;
@@ -179,7 +188,6 @@ static kk_std_core_exn__error kk_os_spawn_win( kk_string_t cmd, kk_vector_t args
   }
   if (nenv > 0) kk_os_win_addc(&envb, 0);
   // pipes: only the child's ends are inherited
-  SECURITY_ATTRIBUTES sa;
   sa.nLength = sizeof(sa); sa.lpSecurityDescriptor = NULL; sa.bInheritHandle = TRUE;
   if (!CreatePipe(&in_r, &in.h, &sa, 0) || !CreatePipe(&out.h, &out_w, &sa, 0) || !CreatePipe(&errio.h, &err_w, &sa, 0)) {
     err = kk_os_win_errno(GetLastError());
@@ -188,15 +196,12 @@ static kk_std_core_exn__error kk_os_spawn_win( kk_string_t cmd, kk_vector_t args
   SetHandleInformation(in.h, HANDLE_FLAG_INHERIT, 0);
   SetHandleInformation(out.h, HANDLE_FLAG_INHERIT, 0);
   SetHandleInformation(errio.h, HANDLE_FLAG_INHERIT, 0);
-  STARTUPINFOA si;
   ZeroMemory(&si, sizeof(si));
   si.cb = sizeof(si);
   si.dwFlags = STARTF_USESTDHANDLES;
   si.hStdInput = in_r; si.hStdOutput = out_w; si.hStdError = err_w;
-  PROCESS_INFORMATION pi;
   ZeroMemory(&pi, sizeof(pi));
-  kk_ssize_t cwdlen;
-  const char* ccwd = kk_string_cbuf_borrow(cwd, &cwdlen, ctx);
+  ccwd = kk_string_cbuf_borrow(cwd, &cwdlen, ctx);
   if (!CreateProcessA(NULL, cl.buf, NULL, NULL, TRUE, CREATE_NO_WINDOW, (nenv > 0 ? envb.buf : NULL),
                       (cwdlen > 0 ? ccwd : NULL), &si, &pi)) {
     err = kk_os_win_errno(GetLastError());
@@ -205,13 +210,12 @@ static kk_std_core_exn__error kk_os_spawn_win( kk_string_t cmd, kk_vector_t args
   CloseHandle(in_r); in_r = NULL;
   CloseHandle(out_w); out_w = NULL;
   CloseHandle(err_w); err_w = NULL;
-  kk_ssize_t inlen;
   in.data = kk_bytes_buf_borrow(input, &inlen, ctx);
   in.len = (size_t)inlen;
-  HANDLE tw = CreateThread(NULL, 0, &kk_os_win_write_all, &in, 0, NULL);
+  tw = CreateThread(NULL, 0, &kk_os_win_write_all, &in, 0, NULL);
   if (tw == NULL) kk_os_win_write_all(&in);
   in.h = NULL;   // closed by the writer
-  HANDLE tr = CreateThread(NULL, 0, &kk_os_win_read_all, &errio, 0, NULL);
+  tr = CreateThread(NULL, 0, &kk_os_win_read_all, &errio, 0, NULL);
   kk_os_win_read_all(&out);
   if (tr == NULL) kk_os_win_read_all(&errio);
   if (tr != NULL) { WaitForSingleObject(tr, INFINITE); CloseHandle(tr); }

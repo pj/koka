@@ -42,7 +42,7 @@ extern import
   c[os=linux|macos|freebsd|netbsd|openbsd|dragonfly|android] { syslib="z" }
 
 extern import
-  c[os=windows] { vcpkg="zlib"; library="zlib" }
+  c[os=windows] { vcpkg="zlib"; library="zs" }
 
 extern import
   c  file "compress-inline.c"

@@ -117,4 +117,4 @@ jobs:
 
       - name: Test suite (C)
         continue-on-error: true
-        run: stack test --fast
+        run: stack test --fast --test-arguments=--seq   # parallel builds of shared test modules collide on Windows
