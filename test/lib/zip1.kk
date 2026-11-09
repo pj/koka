@@ -28,3 +28,26 @@ fun main()
     println(run("sh", ["-c", "cd " ++ dir.string ++ " && zip -qr theirs.zip a.txt sub"]).exit-code)
     zip-read(read-file(dir / "theirs.zip")).foreach fn(e)
       println((e.name, e.data.length, e.is-directory))
+  // zip64, written and read
+  val z64 = zip-write([zip-file("big-format.txt", text.bytes), zip-file("two.txt", "2".bytes)], zip64 = True)
+  println(zip-read(z64).map(fn(e) (e.name, e.data.length)))
+  // encryption: WinZip AES (all strengths) and ZipCrypto
+  val secret = zip-write([zip-file("aes256.txt", text.bytes, password = "pw"), zip-file("aes128.txt", "small".bytes, password = "pw", encryption = Aes128),
+                          zip-file("aes192.txt", "x".bytes, compress = False, password = "pw", encryption = Aes192),
+                          zip-file("legacy.txt", text.bytes, password = "pw", encryption = Zip-crypto), zip-file("plain.txt", "open".bytes)])
+  println(zip-read(secret, password = "pw").map(fn(e) (e.name, e.encryption.show, e.data.length, e.data.string == text)))
+  println(match try({ zip-read(secret) }) { Error(e) -> e.message; Ok(_) -> "read without a password?" })
+  println(match try({ zip-read(secret, password = "wrong") }) { Error(e) -> e.message; Ok(_) -> "read with a wrong password?" })
+  with-temp-dir fn(dir)
+    // our encrypted and zip64 archives with the tools
+    val enc = dir / "enc.zip"
+    write-file(enc, zip-write([zip-file("legacy.txt", text.bytes, password = "pw", encryption = Zip-crypto)]))
+    println(run("unzip", ["-P", "pw", "-p", enc.string, "legacy.txt"]).stdout == text)
+    val z = dir / "z64.zip"
+    write-file(z, z64)
+    println(run("unzip", ["-tq", z.string]).stdout.starts-with("No errors detected").is-just)
+    // archives made by the tools
+    write-text-file(dir / "a.txt", text)
+    println(run("sh", ["-c", "cd " ++ dir.string ++ " && zip -q -P pw crypt.zip a.txt && zip -q -fz z64t.zip a.txt"]).exit-code)
+    println(zip-read(read-file(dir / "crypt.zip"), password = "pw").map(fn(e) (e.name, e.encryption.show, e.data.string == text)))
+    println(zip-read(read-file(dir / "z64t.zip")).map(fn(e) (e.name, e.data.string == text)))

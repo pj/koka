@@ -14,3 +14,12 @@ True
 ("a.txt",900,False)
 ("sub/",0,True)
 ("sub/b.txt",6,False)
+[("big-format.txt",1600),("two.txt",1)]
+[("aes256.txt","aes-256",1600,True),("aes128.txt","aes-128",5,False),("aes192.txt","aes-192",1,False),("legacy.txt","zipcrypto",1600,True),("plain.txt","none",4,False)]
+zip: aes256.txt is encrypted (a password is needed)
+zip: wrong password for aes256.txt
+True
+True
+0
+[("a.txt","zipcrypto",True)]
+[("a.txt",True)]
