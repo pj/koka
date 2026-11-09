@@ -49,6 +49,15 @@ extern import
 // Threads
 // ----------------------------------------------------------------------------
 
+// Does `spawn` run work on other threads? (`False` on the JavaScript backend,
+// where it runs the work immediately.)
+pub fun has-threads() : bool
+  prim-has-threads()
+
+extern prim-has-threads() : bool
+  c  inline "true"
+  js inline "false"
+
 // The result of a function running on another thread.
 abstract struct future<a>( hnd : any )
 
@@ -141,15 +150,21 @@ pub fun with-lock( m : mutex, action : () -> <ndet|e> a ) : <ndet|e> a
 // Channels
 // ----------------------------------------------------------------------------
 
-// An unbounded first-in first-out queue between threads.
+// A first-in first-out queue between threads, unbounded or with a capacity.
 abstract struct channel<a>( hnd : any )
 
-pub fun channel() : ndet channel<a>
-  Channel(prim-chan-new())
+// A new channel. With a `capacity` above 0, `send` waits while the channel
+// holds that many values (so fast producers wait for slow consumers).
+pub fun channel( capacity : int = 0 ) : ndet channel<a>
+  Channel(prim-chan-new(capacity))
 
-// Add a value (never blocks).
+// Add a value, waiting while a bounded channel is full.
 pub fun send( ch : channel<a>, x : a ) : ndet ()
   prim-chan-send(ch.hnd, x)
+
+// Add a value if there is room; returns whether it was added.
+pub fun try-send( ch : channel<a>, x : a ) : ndet bool
+  prim-chan-try-send(ch.hnd, x)
 
 // Take the first value, waiting until there is one.
 pub fun receive( ch : channel<a> ) : ndet a
@@ -219,13 +234,17 @@ extern prim-cell-update( c : any, f : a -> a ) : ndet a
   c  "kk_sync_cell_update"
   js "_sync_cell_update"
 
-extern prim-chan-new() : ndet any
+extern prim-chan-new( capacity : int ) : ndet any
   c  "kk_sync_chan_new"
   js "_sync_chan_new"
 
 extern prim-chan-send( ch : any, x : a ) : ndet ()
   c  "kk_sync_chan_send"
   js "_sync_chan_send"
+
+extern prim-chan-try-send( ch : any, x : a ) : ndet bool
+  c  "kk_sync_chan_try_send"
+  js "_sync_chan_try_send"
 
 extern prim-chan-receive( ch : any ) : ndet a
   c  "kk_sync_chan_receive"

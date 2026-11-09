@@ -37,3 +37,18 @@ fun main()
   println((received.length, received.sum, ch.try-receive, ch.count))
   ch.send("x".count)
   println(ch.try-receive)
+  // a bounded channel: the producer waits while it is full
+  val small = channel(2)
+  println((small.try-send(1), small.try-send(2), small.try-send(3), small.count))
+  println((small.receive, small.receive, small.try-receive))
+  if has-threads() then
+    val most = atomic(0)
+    val producer = spawn
+      for(1, 200) fn(i)
+        small.send(i)
+        val queued = small.count
+        if queued > most.load then most.store(queued)
+    val got = list(1, 200).map(fn(_) small.receive)
+    producer.join
+    println((got == list(1, 200), most.load <= 2))
+  else println((True, True))

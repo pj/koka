@@ -158,6 +158,8 @@ static kk_box_t kk_sync_cell_update( kk_box_t b, kk_function_t f, kk_context_t* 
 typedef struct kk_sync_chan_s {
   pthread_mutex_t m;
   pthread_cond_t  available;
+  pthread_cond_t  space;    // signalled when an item is taken (for bounded channels)
+  kk_ssize_t      limit;    // the capacity, or 0 if unbounded
   kk_box_t*       items;
   kk_ssize_t      head;     // index of the first item
   kk_ssize_t      count;
@@ -171,14 +173,18 @@ static void kk_sync_chan_free( void* p, kk_block_t* block, kk_context_t* ctx ) {
   if (ch->items != NULL) kk_free(ch->items,ctx);
   pthread_mutex_destroy(&ch->m);
   pthread_cond_destroy(&ch->available);
+  pthread_cond_destroy(&ch->space);
   kk_free(ch,ctx);
 }
 
-static kk_box_t kk_sync_chan_new( kk_context_t* ctx ) {
+static kk_box_t kk_sync_chan_new( kk_integer_t limit, kk_context_t* ctx ) {
   kk_sync_chan_t* ch = (kk_sync_chan_t*)kk_malloc(sizeof(kk_sync_chan_t),ctx);
   memset(ch, 0, sizeof(kk_sync_chan_t));
+  const kk_ssize_t lim = kk_integer_clamp_ssize_t(limit,ctx);
+  ch->limit = (lim > 0 ? lim : 0);
   pthread_mutex_init(&ch->m, NULL);
   pthread_cond_init(&ch->available, NULL);
+  pthread_cond_init(&ch->space, NULL);
   kk_box_t b = kk_cptr_raw_box(&kk_sync_chan_free, ch, ctx);
   kk_box_mark_shared(b,ctx);
   return b;
@@ -188,10 +194,8 @@ static kk_sync_chan_t* kk_sync_chan_of( kk_box_t b, kk_context_t* ctx ) {
   return (kk_sync_chan_t*)kk_cptr_raw_unbox_borrowed(b,ctx);
 }
 
-static kk_unit_t kk_sync_chan_send( kk_box_t b, kk_box_t x, kk_context_t* ctx ) {
-  kk_sync_chan_t* ch = kk_sync_chan_of(b,ctx);
-  kk_box_mark_shared(x,ctx);
-  pthread_mutex_lock(&ch->m);
+// Add an item (the lock is held, and there is room).
+static void kk_sync_chan_push( kk_sync_chan_t* ch, kk_box_t x, kk_context_t* ctx ) {
   if (ch->count == ch->cap) {
     const kk_ssize_t newcap = (ch->cap == 0 ? 16 : 2 * ch->cap);
     kk_box_t* items = (kk_box_t*)kk_malloc(newcap * (kk_ssize_t)sizeof(kk_box_t), ctx);
@@ -204,15 +208,44 @@ static kk_unit_t kk_sync_chan_send( kk_box_t b, kk_box_t x, kk_context_t* ctx ) 
   ch->items[(ch->head + ch->count) % ch->cap] = x;
   ch->count++;
   pthread_cond_signal(&ch->available);
+}
+
+static bool kk_sync_chan_full( kk_sync_chan_t* ch ) {
+  return (ch->limit > 0 && ch->count >= ch->limit);
+}
+
+// Add an item, waiting while a bounded channel is full.
+static kk_unit_t kk_sync_chan_send( kk_box_t b, kk_box_t x, kk_context_t* ctx ) {
+  kk_sync_chan_t* ch = kk_sync_chan_of(b,ctx);
+  kk_box_mark_shared(x,ctx);
+  pthread_mutex_lock(&ch->m);
+  while (kk_sync_chan_full(ch)) pthread_cond_wait(&ch->space, &ch->m);
+  kk_sync_chan_push(ch, x, ctx);
   pthread_mutex_unlock(&ch->m);
   kk_box_drop(b,ctx);
   return kk_Unit;
+}
+
+// Add an item if there is room; returns whether it was added.
+static bool kk_sync_chan_try_send( kk_box_t b, kk_box_t x, kk_context_t* ctx ) {
+  kk_sync_chan_t* ch = kk_sync_chan_of(b,ctx);
+  pthread_mutex_lock(&ch->m);
+  const bool ok = !kk_sync_chan_full(ch);
+  if (ok) {
+    kk_box_mark_shared(x,ctx);
+    kk_sync_chan_push(ch, x, ctx);
+  }
+  pthread_mutex_unlock(&ch->m);
+  if (!ok) kk_box_drop(x,ctx);
+  kk_box_drop(b,ctx);
+  return ok;
 }
 
 static kk_box_t kk_sync_chan_take( kk_sync_chan_t* ch ) {
   kk_box_t x = ch->items[ch->head];
   ch->head = (ch->head + 1) % ch->cap;
   ch->count--;
+  pthread_cond_signal(&ch->space);
   return x;
 }
 
