@@ -223,7 +223,7 @@ runLimited cmd argv
        out <- readFile outPath
        _ <- evaluate (length out)
        removeFile outPath
-       return (if finished then out else "test timed out after " ++ show limit ++ " seconds")
+       return (if finished then out else out ++ "\ntest timed out after " ++ show limit ++ " seconds")
   where
     waitLimited ph n
       = do code <- getProcessExitCode ph

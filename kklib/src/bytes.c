@@ -497,13 +497,15 @@ kk_bytes_t  kk_bytes_join_with(kk_vector_t v, kk_bytes_t sep, kk_context_t* ctx)
   kk_ssize_t  seplen;
   const char* sepbuf = kk_bytes_cbuf_borrow(sep, &seplen, ctx); 
   kk_ssize_t  n = kk_vector_len_borrow(v, ctx);
+  kk_box_t*   vbuf;    // (declared before the `goto`: this is also compiled as C++)
+  char*       resbuf;
   if (n <= 0) goto end;
 
   // borrow the element buffer once: `kk_vector_at_borrow` returns an *owned*
   // (kk_box_dup'ed) box, and the elements below are only read -- dropping was
   // never done here, so every joined element leaked a reference
   // (koka-lang/koka#903). Indexing the borrowed buffer avoids the dup entirely.
-  kk_box_t* vbuf = kk_vector_buf_borrow(v, NULL, ctx);
+  vbuf = kk_vector_buf_borrow(v, NULL, ctx);
 
   // find total required length
   // TODO: check totallen overflow
@@ -514,7 +516,6 @@ kk_bytes_t  kk_bytes_join_with(kk_vector_t v, kk_bytes_t sep, kk_context_t* ctx)
   totallen += (n - 1) * kk_bytes_len_borrow(sep, ctx);
 
   // copy into the new buffer
-  char* resbuf;
   res = kk_bytes_alloc_cbuf(totallen, &resbuf, ctx);
   for (kk_ssize_t i = 0; i < n; i++) {
     kk_bytes_t elem = kk_bytes_unbox(vbuf[i]);

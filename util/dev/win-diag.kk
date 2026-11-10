@@ -22,3 +22,14 @@ fun main()
                            zip-file("ünïcode.txt", "ok".bytes), Zip-entry("run.sh", "echo hi".bytes, unix-mode = 0x1ED)])
   println(archive.list.map(fn(x) x.show-hex(2, False)).join(" "))
   println(catch(fn(e) e.message, { zip-read(archive).map(fn(e) e.name ++ ":" ++ e.data.length.show).join(",") }))
+  // which entry sizes fail? (stored, since tiny data does not deflate)
+  for(1, 9) fn(n)
+    val d = "abcdefghij".bytes.subbytes(0, n)
+    val z = zip-write([zip-file("f", d)])
+    println((n, catch(fn(e) e.message, { zip-read(z).map(fn(e) e.data.list.map(show).join(".")).join(",") })))
+  // the reader's steps by hand: the data of ok.txt starts at 36
+  val s = a.subbytes(36, 2)
+  println(("by hand", s.list.map(show), s.length, crc32(s).show-hex, a.subbytes(14, 4).list.map(show)))
+  // reading a fresh copy of the archive
+  val a2 = a.list.vector.bytes
+  println(catch(fn(e) e.message, { zip-read(a2).map(fn(e) e.name ++ ":" ++ e.data.length.show).join(",") }))
