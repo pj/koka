@@ -23,8 +23,11 @@ fun main()
     remove-file(g)
     println(g.path-exists)
     // permissions
+    // (only the owner's write bit is portable: Windows has just a read-only attribute)
+    set-permissions(b, 0x100)   // 0o400
+    val ro = file-info(b).permissions
     set-permissions(b, 0x1C0)   // 0o700
-    println(file-info(b).permissions == 0x1C0)
+    println(((ro / 128) % 2 == 0, (file-info(b).permissions / 128) % 2 == 1))
     // directories and glob
     ensure-dir(dir / "src" / "sub")
     create-dir(dir / "empty")

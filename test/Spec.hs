@@ -11,6 +11,7 @@ import System.FilePath
 import System.IO
 import qualified System.Info as Sys
 import System.Process (readProcessWithExitCode)
+import System.Timeout (timeout)
 import Text.Regex.TDFA
 import Text.JSON
 import Test.Hspec
@@ -191,16 +192,25 @@ runKoka cfg kokaDir fp
            kokaFlags = optFlag ++ flags cfg ++ caseFlags           
        if (cabal (options cfg))
          then do let argv = ["new-run", "koka", "--"] ++ kokaFlags ++ [relTest]
-                 (exitCode, stdout, stderr) <- readProcessWithExitCode "cabal" argv ""
+                 stdout <- runLimited "cabal" argv
                  return (testSanitize kokaDir stdout)
          else do let stackFlags = if (sysghc (options cfg)) then ["--system-ghc","--skip-ghc-check"] else []
                      argv = ["exec","koka"] ++ stackFlags ++ ["--"] ++ kokaFlags ++ [relTest]
                  -- hPutStrLn stderr (unwords argv) -- show koka command
-                 (exitCode, stdout, stderr) <- readProcessWithExitCode "stack" argv ""
-                 -- putStrLn stdout
+                 stdout <- runLimited "stack" argv
                  return (testSanitize kokaDir stdout)
 
 
+
+-- Run a test (compile and run) with a time limit, so that a hanging test fails
+-- instead of stopping the suite: `KOKA_TEST_TIMEOUT` seconds (default 600).
+runLimited :: FilePath -> [String] -> IO String
+runLimited cmd argv
+  = do limit <- maybe 600 read <$> lookupEnv "KOKA_TEST_TIMEOUT"
+       res <- timeout (limit * 1000000) (readProcessWithExitCode cmd argv "")
+       case res of
+         Just (_exitCode, stdout, _stderr) -> return stdout
+         Nothing -> return ("test timed out after " ++ show limit ++ " seconds")
 
 makeTest :: Cfg -> FilePath -> Spec
 makeTest cfg fp

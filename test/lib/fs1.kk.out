@@ -5,7 +5,7 @@
 [0,1,2,255,254,7]
 (False,True)
 False
-True
+(True,True)
 ["a.kk"]
 ["a.kk","c.kk"]
 ["a.kk","b.txt"]

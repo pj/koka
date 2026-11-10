@@ -124,7 +124,7 @@ jobs:
         continue-on-error: true
         timeout-minutes: 15
         run: |
-          foreach ($t in "test/lib/sync1.kk", "test/net/tls2.kk", "test/lib/zip1.kk") { stack exec koka -- -e $t }
+          foreach ($t in "util/dev/win-diag.kk") { stack exec koka -- -e $t }
 
       - name: Test suite (C)
         continue-on-error: true

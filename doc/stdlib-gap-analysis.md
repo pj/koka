@@ -528,7 +528,12 @@ backends and diffs the output against its `.out` file.
   `kk_atomic`); the TLS module used POSIX `<strings.h>` and `strndup`.
   `process1`/`proc1` no longer assume `/usr` exists. MinGW's headers have
   all of these, so the MinGW check cannot catch them.
-  Open: `zip1` reports a wrong checksum for a 2-byte entry on Windows only.
+  `fs1`/`fs-walk` no longer test POSIX-only permissions on Windows. The test
+  runner gives each test 10 minutes (`KOKA_TEST_TIMEOUT`), so a hang fails
+  that test instead of stopping the suite.
+  Open: `zip1` reports a wrong checksum for a 2-byte entry on Windows only
+  (`util/dev/win-diag.kk` runs in CI to narrow it down); `net/http5` (HTTP/2
+  over TLS) hangs on Windows.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.

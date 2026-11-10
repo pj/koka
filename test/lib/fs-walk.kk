@@ -1,6 +1,7 @@
 // std/os/fs: lazy directory walk
 import std/core/seq
 import std/os/fs
+import std/os/env
 
 fun main()
   with-temp-dir fn(dir)
@@ -21,7 +22,8 @@ fun main()
     write-text-file(dir / "zz/secret", "")
     set-permissions(dir / "zz", 0)
     println(walk(dir).find(fn(p) p.nodir.string == "x.kk").map(rel))
-    println(try { walk(dir).list.length }.either.is-left)
+    // (Windows cannot make a directory unreadable)
+    println(try { walk(dir).list.length }.either.is-left || get-os-name() == "windows")
     set-permissions(dir / "zz", 0x1ED)
     // a missing directory raises an exception when the walk starts
     println(try { walk(dir / "nope").list.length }.either.is-left)
