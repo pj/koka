@@ -327,14 +327,20 @@ int kk_os_ensure_dir(kk_string_t path, int mode, kk_context_t* ctx)
         char c = (char)(*p);
         if ((c == 0 && p != cpath) || c == '/' || c == '\\') {
           *p = 0;
-          if (p > cpath && !kk_is_dir(cpath)) {  // if cpath starts with / the initial iteration is empty (issue #225)
+          #if defined(WIN32)
+          const bool is_drive = (p == cpath + 2 && cpath[1] == ':');  // `C:` itself cannot be created (EACCES)
+          #else
+          const bool is_drive = false;
+          #endif
+          if (p > cpath && !is_drive && !kk_is_dir(cpath)) {  // if cpath starts with / the initial iteration is empty (issue #225)
             #if defined(WIN32)
             int res = _wmkdir(cpath);
             #else
             int res = mkdir(cpath, mode);
             #endif
-            if (res != 0 && errno != EEXIST) {
-              err = errno;
+            const int e = (res != 0 ? errno : 0);
+            if (res != 0 && e != EEXIST && !kk_is_dir(cpath)) {  // (stat may change errno)
+              err = e;
             }
           }
           #if defined(WIN32)

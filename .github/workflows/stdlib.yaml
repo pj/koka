@@ -86,6 +86,10 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 180
     steps:
+      # keep LF line endings: tests have multi-line string literals and read text data files
+      - name: Disable CRLF conversion
+        run: git config --global core.autocrlf false
+
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,6 +118,13 @@ jobs:
           test: false
           stack-build-arguments: "--fast"
           cache-save-always: true
+
+      # the test output does not include the C compiler's messages; show them here
+      - name: Compile diagnostics
+        continue-on-error: true
+        timeout-minutes: 15
+        run: |
+          foreach ($t in "test/lib/sync1.kk", "test/net/tls2.kk", "test/lib/zip1.kk") { stack exec koka -- -e $t }
 
       - name: Test suite (C)
         continue-on-error: true

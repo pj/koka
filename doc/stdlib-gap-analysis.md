@@ -519,7 +519,16 @@ backends and diffs the output against its `.out` file.
   test step now has a timeout. `rational.float64` rounded twice (truncating
   division, then a 64-bit bigint conversion) and was off by one ulp on
   Windows; it now rounds once (round-to-odd on a 55-bit quotient, `ldexp`).
-  Open: `xml1`/`xml2` output differences (seen in an earlier run).
+  The first full run (28 failures) found more: git's CRLF checkout changed
+  multi-line string literals and Unicode test data (`xml1`, `xml2`,
+  `unicode1`; CI now checks out with `core.autocrlf false`); kklib's
+  `ensure-dir` tried to `mkdir("C:")` and failed with EACCES (now skips the
+  drive and ignores errors for paths that are directories); `std/os/sync`
+  used C11 `<stdatomic.h>`, which MSVC rejects in C++ (now kklib's
+  `kk_atomic`); the TLS module used POSIX `<strings.h>` and `strndup`.
+  `process1`/`proc1` no longer assume `/usr` exists. MinGW's headers have
+  all of these, so the MinGW check cannot catch them.
+  Open: `zip1` reports a wrong checksum for a 2-byte entry on Windows only.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.

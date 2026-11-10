@@ -1,8 +1,6 @@
 (3,"out\n","err\n")
 fed through stdin
-from env
-/usr/bin
-
+("from env",True)
 UPPER
 (0,500000,True)
 0

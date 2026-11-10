@@ -7,7 +7,7 @@
 ---------------------------------------------------------------------------*/
 // Thread-safe primitives: boxed C pointers. Values that are stored in them
 // are marked as thread shared (so that their reference counts are atomic).
-#include <stdatomic.h>
+// (atomics come from kklib: `_Atomic` and `kk_atomic(op)` also work when compiled as C++)
 #if defined(_WIN32)
 // Windows: slim reader/writer locks and condition variables
 #include <windows.h>
@@ -65,7 +65,7 @@ static void kk_sync_free( void* p, kk_block_t* block, kk_context_t* ctx ) {
 
 static kk_box_t kk_sync_atomic_new( kk_integer_t i, kk_context_t* ctx ) {
   kk_sync_atomic_t* a = (kk_sync_atomic_t*)kk_malloc(sizeof(kk_sync_atomic_t),ctx);
-  atomic_init(&a->v, kk_integer_clamp64(i,ctx));
+  kk_atomic(init)(&a->v, kk_integer_clamp64(i,ctx));
   kk_box_t b = kk_cptr_raw_box(&kk_sync_free, a, ctx);
   kk_box_mark_shared(b,ctx);
   return b;
@@ -76,33 +76,33 @@ static _Atomic(int64_t)* kk_sync_atomic_of( kk_box_t b, kk_context_t* ctx ) {
 }
 
 static kk_integer_t kk_sync_atomic_load( kk_box_t b, kk_context_t* ctx ) {
-  const int64_t v = atomic_load(kk_sync_atomic_of(b,ctx));
+  const int64_t v = kk_atomic(load)(kk_sync_atomic_of(b,ctx));
   kk_box_drop(b,ctx);
   return kk_integer_from_int64(v,ctx);
 }
 
 static kk_unit_t kk_sync_atomic_store( kk_box_t b, kk_integer_t i, kk_context_t* ctx ) {
-  atomic_store(kk_sync_atomic_of(b,ctx), kk_integer_clamp64(i,ctx));
+  kk_atomic(store)(kk_sync_atomic_of(b,ctx), kk_integer_clamp64(i,ctx));
   kk_box_drop(b,ctx);
   return kk_Unit;
 }
 
 // Returns the old value.
 static kk_integer_t kk_sync_atomic_fetch_add( kk_box_t b, kk_integer_t i, kk_context_t* ctx ) {
-  const int64_t v = atomic_fetch_add(kk_sync_atomic_of(b,ctx), kk_integer_clamp64(i,ctx));
+  const int64_t v = kk_atomic(fetch_add)(kk_sync_atomic_of(b,ctx), kk_integer_clamp64(i,ctx));
   kk_box_drop(b,ctx);
   return kk_integer_from_int64(v,ctx);
 }
 
 static kk_integer_t kk_sync_atomic_exchange( kk_box_t b, kk_integer_t i, kk_context_t* ctx ) {
-  const int64_t v = atomic_exchange(kk_sync_atomic_of(b,ctx), kk_integer_clamp64(i,ctx));
+  const int64_t v = kk_atomic(exchange)(kk_sync_atomic_of(b,ctx), kk_integer_clamp64(i,ctx));
   kk_box_drop(b,ctx);
   return kk_integer_from_int64(v,ctx);
 }
 
 static bool kk_sync_atomic_cas( kk_box_t b, kk_integer_t expected, kk_integer_t desired, kk_context_t* ctx ) {
   int64_t e = kk_integer_clamp64(expected,ctx);
-  const bool ok = atomic_compare_exchange_strong(kk_sync_atomic_of(b,ctx), &e, kk_integer_clamp64(desired,ctx));
+  const bool ok = kk_atomic(compare_exchange_strong)(kk_sync_atomic_of(b,ctx), &e, kk_integer_clamp64(desired,ctx));
   kk_box_drop(b,ctx);
   return ok;
 }

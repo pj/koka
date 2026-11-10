@@ -12,7 +12,20 @@
 
 #include <stdlib.h>
 #include <string.h>
+#if defined(_MSC_VER)
+// MSVC has no <strings.h> and no `strndup`
+#define strncasecmp _strnicmp
+static char* kk_tls_strndup( const char* s, size_t n ) {
+  size_t len = 0;
+  while (len < n && s[len] != 0) len++;
+  char* d = (char*)malloc(len + 1);
+  if (d != NULL) { memcpy(d, s, len); d[len] = 0; }
+  return d;
+}
+#define strndup kk_tls_strndup
+#else
 #include <strings.h>
+#endif
 #include <mbedtls/ssl.h>
 #include <mbedtls/entropy.h>
 #include <mbedtls/ctr_drbg.h>

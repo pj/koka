@@ -5,8 +5,7 @@ SHOUT THIS
 (True,108894)
 from-env
 
-/usr
-
+True
 a-b
 failed as expected
 missing program
