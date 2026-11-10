@@ -214,7 +214,7 @@ runLimited cmd argv
   = do limit <- maybe 600 read <$> lookupEnv "KOKA_TEST_TIMEOUT"
        tmp <- getTemporaryDirectory
        (outPath, hout) <- openTempFile tmp "koka-test.out"
-       herr <- openFile (if Sys.os == "mingw32" then "NUL" else "/dev/null") WriteMode
+       (errPath, herr) <- openTempFile tmp "koka-test.err"   -- (GHC cannot open `NUL` on Windows)
        (Just hin, _, _, ph) <- createProcess (proc cmd argv){ std_in = CreatePipe, std_out = UseHandle hout,
                                                               std_err = UseHandle herr, create_group = True }
        hClose hin
@@ -223,6 +223,7 @@ runLimited cmd argv
        out <- readFile outPath
        _ <- evaluate (length out)
        removeFile outPath
+       removeFile errPath
        return (if finished then out else out ++ "\ntest timed out after " ++ show limit ++ " seconds")
   where
     waitLimited ph n

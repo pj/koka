@@ -2,6 +2,7 @@
 // short byte values and slices, and the `zip1` entry that fails there.
 import std/compress
 import std/compress/zip
+import std/num/int64
 
 fun main()
   val ok = "ok".bytes
@@ -33,3 +34,17 @@ fun main()
   // reading a fresh copy of the archive
   val a2 = a.list.vector.bytes
   println(catch(fn(e) e.message, { zip-read(a2).map(fn(e) e.name ++ ":" ++ e.data.length.show).join(",") }))
+  // integer arithmetic around 2^30..2^31 (from runtime values, so nothing is folded)
+  val two = ok.length
+  val x = two * 0x3CEE                     // 0x79DC
+  val m1 = x * 65536                       // 0x79DC0000
+  val m2 = m1 + 0xDD47                     // 0x79DCDD47
+  val c = crc32(ok)
+  println(("mul", m1.show-hex, m1 == 0x79DC0000))
+  println(("add", m2.show-hex, m2 == 0x79DCDD47))
+  println(("crc", c.show-hex, c == 0x79DCDD47, c == m2, m2 == c))
+  println(("cmp", c != m2, (c < m2, c > m2)))
+  val b1 = (two / 2) * 0x40000000          // 2^30
+  println(("2^30", b1.show-hex, b1 == 0x40000000, (b1 - 1).show-hex))
+  println(("2^31", (b1 * 2).show-hex, (b1 * 2) == 0x80000000))
+  println(("i64", c.int64.show, m2.int64.show, c.int64 == m2.int64))
