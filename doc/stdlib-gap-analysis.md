@@ -545,7 +545,14 @@ backends and diffs the output against its `.out` file.
   boundaries (reproduce locally with
   `--ccopts="-DKK_INT_ARITHMETIC=3 -DKK_INT_SOFA_RIGHT_BIAS -U__SIZEOF_INT128__"`).
   `proc/signal1` is excluded on Windows (it uses `SIGUSR1`/`SIGUSR2` and
-  `kill`). Open: `net/http5` and `net/http9` (HTTP/2) time out on Windows.
+  `kill`); CI installs Info-ZIP `zip` (Git for Windows only has `unzip`).
+  A failing test now also shows its stderr (the linker's messages were lost:
+  two one-off link failures on Linux arm64, `set1` and `seq2`, show no cause).
+  Open: `net/http5` and `net/http9` (HTTP/2) time out on Windows. http9
+  stops at the HTTP/2 echo of a 3 MB body (the server streams it back while
+  the client uploads); http5 fails its h2c part with "connection reset by
+  peer" (it also echoes large bodies) and then hangs. HTTP/1.1 and the other
+  HTTP/2 cases pass there.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.

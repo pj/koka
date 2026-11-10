@@ -119,7 +119,12 @@ jobs:
           stack-build-arguments: "--fast"
           cache-save-always: true
 
-      # the test output does not include the C compiler's messages; show them here
+      # zip1 checks interoperability with Info-ZIP; Git for Windows has `unzip` but no `zip`
+      - name: Install zip
+        run: |
+          choco install zip --no-progress -y
+          zip -v | Select-Object -First 2
+
       - name: Test suite (C)
         continue-on-error: true
         timeout-minutes: 100   # a hanging test should not use up the job

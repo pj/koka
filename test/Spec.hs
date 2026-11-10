@@ -187,19 +187,24 @@ expectedSanitize input
 
 runKoka :: Cfg -> FilePath -> FilePath -> IO String
 runKoka cfg kokaDir fp
+  = fst <$> runKokaErr cfg kokaDir fp
+
+-- the sanitized stdout, and the stderr (shown only when a test fails, e.g. linker errors)
+runKokaErr :: Cfg -> FilePath -> FilePath -> IO (String,String)
+runKokaErr cfg kokaDir fp
   = do caseFlags <- readFlagsFile (fp ++ ".flags")
        let relTest = makeRelative kokaDir fp
            optFlag   = if (opt (options cfg) /= 0) then ["-O" ++ show (opt (options cfg))] else []
            kokaFlags = optFlag ++ flags cfg ++ caseFlags           
        if (cabal (options cfg))
          then do let argv = ["new-run", "koka", "--"] ++ kokaFlags ++ [relTest]
-                 stdout <- runLimited "cabal" argv
-                 return (testSanitize kokaDir stdout)
+                 (out,err) <- runLimited "cabal" argv
+                 return (testSanitize kokaDir out, err)
          else do let stackFlags = if (sysghc (options cfg)) then ["--system-ghc","--skip-ghc-check"] else []
                      argv = ["exec","koka"] ++ stackFlags ++ ["--"] ++ kokaFlags ++ [relTest]
                  -- hPutStrLn stderr (unwords argv) -- show koka command
-                 stdout <- runLimited "stack" argv
-                 return (testSanitize kokaDir stdout)
+                 (out,err) <- runLimited "stack" argv
+                 return (testSanitize kokaDir out, err)
 
 
 
@@ -210,7 +215,7 @@ runKoka cfg kokaDir fp
 -- a pipe open (and on Windows a thread blocked reading it cannot be killed).
 -- On a timeout the whole process tree is killed. The test program writes
 -- stdout unbuffered (`KK_STDOUT_UNBUFFERED`) so that its partial output is kept.
-runLimited :: FilePath -> [String] -> IO String
+runLimited :: FilePath -> [String] -> IO (String,String)
 runLimited cmd argv
   = do limit <- maybe 600 read <$> lookupEnv "KOKA_TEST_TIMEOUT"
        setEnv "KK_STDOUT_UNBUFFERED" "1"
@@ -224,9 +229,11 @@ runLimited cmd argv
        unless finished $ killTree ph
        out <- readFile outPath
        _ <- evaluate (length out)
+       err <- readFile errPath
+       _ <- evaluate (length err)
        removeFile outPath
        removeFile errPath
-       return (if finished then out else out ++ "\ntest timed out after " ++ show limit ++ " seconds")
+       return (if finished then out else out ++ "\ntest timed out after " ++ show limit ++ " seconds", err)
   where
     waitLimited ph n
       = do code <- getProcessExitCode ph
@@ -246,6 +253,9 @@ runLimited cmd argv
            terminateProcess ph
            void $ waitForProcess ph
 
+lastLines :: Int -> String -> String
+lastLines n s = unlines (reverse (take n (reverse (lines s))))
+
 makeTest :: Cfg -> FilePath -> Spec
 makeTest cfg fp
   | takeExtension fp == ".kk"
@@ -255,9 +265,11 @@ makeTest cfg fp
            when shouldRun $
              it (takeBaseName fp) $ do
                kokaDir <- getCurrentDirectory
-               out <- runKoka cfg kokaDir fp
+               (out,err) <- runKokaErr cfg kokaDir fp
                unless (mode (options cfg) == Test) $ (withBinaryFile expectedFile WriteMode (\h -> hPutStr h out)) -- writeFile expectedFile out
                expected <- testSanitize kokaDir <$> readFile expectedFile
+               when (out /= expected && not (null (trim err))) $
+                 hPutStrLn stderr ("--- stderr of " ++ fp ++ ":\n" ++ lastLines 40 err)
                out `shouldBe` expected
   | otherwise
       = return ()
