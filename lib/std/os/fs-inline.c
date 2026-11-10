@@ -24,6 +24,11 @@
 #include <fcntl.h>
 #include <stdlib.h>
 #endif
+// MSVC's <sys/stat.h> has the mode bits but not the test macros (MinGW does)
+#if !defined(S_ISREG) && defined(_S_IFMT)
+#define S_ISREG(m)  (((m) & _S_IFMT) == _S_IFREG)
+#define S_ISDIR(m)  (((m) & _S_IFMT) == _S_IFDIR)
+#endif
 
 static kk_std_core_exn__error kk_os_unit_result( int err, kk_context_t* ctx ) {
   if (err != 0) return kk_error_from_errno(err,ctx);

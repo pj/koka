@@ -155,11 +155,15 @@ pub fun fraction( x : rational ) : rational
 
 // The nearest float.
 pub fun float64( x : rational ) : float64
-  // scale so that the integer division keeps about 60 significant bits
+  // Scale so the quotient has 55 or 56 bits and make it odd when the division
+  // was inexact ("round to odd"): the one rounding to 53 bits in the (exact
+  // range) int conversion is then correct, and `ldexp` scales exactly.
   val n = x.num.abs
-  val shift = 64 + x.den.count-digits2 - n.count-digits2
-  val mag = if shift <= 0 then (n / x.den).float64
-            else ((n * (2 ^ shift)) / x.den).float64 * exp2((0 - shift).float64)
+  val shift = 55 + x.den.count-digits2 - n.count-digits2
+  val (scaled-n, scaled-d) = if shift >= 0 then (n * (2 ^ shift), x.den) else (n, x.den * (2 ^ (0 - shift)))
+  val q = scaled-n / scaled-d
+  val q1 = if q * scaled-d != scaled-n && q.is-even then q + 1 else q
+  val mag = ldexp(q1.float64, 0 - shift)
   if x.num < 0 then 0.0 - mag else mag
 
 // The number of binary digits of a non-negative integer.

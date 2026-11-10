@@ -170,6 +170,7 @@ static kk_std_core_exn__error kk_os_spawn_win( kk_string_t cmd, kk_vector_t args
   kk_ssize_t inlen = 0;
   HANDLE tw = NULL;
   HANDLE tr = NULL;
+  bool in_owned = true;   // the input write handle is ours to close (until the writer thread takes it)
   // the command line
   kk_os_win_quote(&cl, kk_string_cbuf_borrow(cmd, NULL, ctx));
   kk_ssize_t nargs;
@@ -214,7 +215,7 @@ static kk_std_core_exn__error kk_os_spawn_win( kk_string_t cmd, kk_vector_t args
   in.len = (size_t)inlen;
   tw = CreateThread(NULL, 0, &kk_os_win_write_all, &in, 0, NULL);
   if (tw == NULL) kk_os_win_write_all(&in);
-  in.h = NULL;   // closed by the writer
+  in_owned = false;   // closed by the writer (do not clear `in.h`: the thread may not have read it yet)
   tr = CreateThread(NULL, 0, &kk_os_win_read_all, &errio, 0, NULL);
   kk_os_win_read_all(&out);
   if (tr == NULL) kk_os_win_read_all(&errio);
@@ -229,7 +230,7 @@ cleanup:
   if (in_r != NULL) CloseHandle(in_r);
   if (out_w != NULL) CloseHandle(out_w);
   if (err_w != NULL) CloseHandle(err_w);
-  if (in.h != NULL) CloseHandle(in.h);
+  if (in_owned && in.h != NULL) CloseHandle(in.h);
   if (out.h != NULL) CloseHandle(out.h);
   if (errio.h != NULL) CloseHandle(errio.h);
   kk_bytes_t bout = kk_bytes_alloc_dupn((kk_ssize_t)out.out.len, (const uint8_t*)out.out.buf, ctx);

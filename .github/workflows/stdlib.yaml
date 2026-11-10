@@ -117,4 +117,5 @@ jobs:
 
       - name: Test suite (C)
         continue-on-error: true
+        timeout-minutes: 100   # a hanging test should not use up the job
         run: stack test --fast --test-arguments=--seq   # parallel builds of shared test modules collide on Windows

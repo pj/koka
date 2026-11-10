@@ -366,8 +366,7 @@ backends and diffs the output against its `.out` file.
   implementations and Windows (MSVCRT/Win32) ones: `CreateProcess` with pipes
   for `run`, `_open`/`_read`/`_write` for file handles, unique temporary
   files and directories, SRW locks and condition variables for
-  `std/os/sync`. The Windows code is compiled with MinGW (`-Wall`, no
-  warnings) but has not been run on Windows. On Windows `set-permissions` only
+  `std/os/sync`. The Windows code runs in CI (`windows-latest`, clang-cl). On Windows `set-permissions` only
   sets the read-only attribute and there are no symbolic links.
 * The JavaScript implementations need Node.js. In a browser they report an
   error.
@@ -513,7 +512,14 @@ backends and diffs the output against its `.out` file.
   stdlib modules now compile as Windows C++ (checked with MinGW `g++ -x c++`
   and the libraries' headers). Tests run sequentially there (`--seq`), since
   parallel builds of shared test modules collide ("permission denied").
-  Open: output differences in a few tests (`num-rational1`, `xml1`/`xml2`).
+  MSVC lacks `S_ISREG`/`S_ISDIR` (MinGW has them, so the MinGW check missed
+  it; `std/os/fs` defines them). `run` with `input` hung: the stdin writer
+  thread read its pipe handle after the caller had cleared it, so the pipe
+  was never closed and the child waited for EOF (`process1`); the Windows
+  test step now has a timeout. `rational.float64` rounded twice (truncating
+  division, then a 64-bit bigint conversion) and was off by one ulp on
+  Windows; it now rounds once (round-to-odd on a 55-bit quotient, `ldexp`).
+  Open: `xml1`/`xml2` output differences (seen in an earlier run).
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.
