@@ -45,7 +45,10 @@ static int kk_posix_open(kk_string_t path, int flags, int create_perm, kk_file_t
   *f = 0;
 #ifdef WIN32
   kk_with_string_as_qutf16w_borrow(path, wpath, ctx) {
-    *f = _wopen(wpath, flags, create_perm);
+    // binary mode: text mode would turn `\n` into `\r\n` on writes (and back on
+    // reads, stopping at a ctrl-Z), so files differ from other platforms and
+    // `copy-file` corrupts binary data; and do not leak the handle to child processes
+    *f = _wopen(wpath, flags | _O_BINARY | _O_NOINHERIT, create_perm);
   }
 #else
   kk_with_string_as_qutf8_borrow(path, bpath, ctx) {

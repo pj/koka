@@ -546,6 +546,10 @@ backends and diffs the output against its `.out` file.
   `--ccopts="-DKK_INT_ARITHMETIC=3 -DKK_INT_SOFA_RIGHT_BIAS -U__SIZEOF_INT128__"`).
   `proc/signal1` is excluded on Windows (it uses `SIGUSR1`/`SIGUSR2` and
   `kill`); CI installs Info-ZIP `zip` (Git for Windows only has `unzip`).
+  kklib opened files in Windows *text* mode (`_wopen` without `_O_BINARY`):
+  `write-text-file` wrote `\r\n` line ends, `read-text-file` dropped `\r`
+  and stopped at a ctrl-Z byte, and `copy-file` could corrupt binary files.
+  It now uses `_O_BINARY | _O_NOINHERIT`, as `std/os/fs` already did.
   A failing test now also shows its stderr (the linker's messages were lost:
   two one-off link failures on Linux arm64, `set1` and `seq2`, show no cause).
   Open: `net/http5` and `net/http9` (HTTP/2) time out on Windows. http9
