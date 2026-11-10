@@ -319,7 +319,7 @@ static kk_integer_t integer_bigint(kk_bigint_t* x, kk_context_t* ctx) {
   }
   else if (x->count==1
 #if (DIGIT_BITS >= KK_SMALLINT_BITS-2)
-    && x->digits[0] <= KK_SMALLINT_MAX
+    && (x->digits[0] <= KK_SMALLINT_MAX || (x->is_neg && x->digits[0] == (kk_digit_t)KK_SMALLINT_MAX + 1))  // including KK_SMALLINT_MIN
 #endif
   ) {
 

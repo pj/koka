@@ -530,10 +530,22 @@ backends and diffs the output against its `.out` file.
   all of these, so the MinGW check cannot catch them.
   `fs1`/`fs-walk` no longer test POSIX-only permissions on Windows. The test
   runner gives each test 10 minutes (`KOKA_TEST_TIMEOUT`), so a hang fails
-  that test instead of stopping the suite.
-  Open: `zip1` reports a wrong checksum for a 2-byte entry on Windows only
-  (`util/dev/win-diag.kk` runs in CI to narrow it down); `net/http5` (HTTP/2
-  over TLS) hangs on Windows.
+  that test instead of stopping the suite; tests write stdout unbuffered
+  (`KK_STDOUT_UNBUFFERED`, read by kklib at startup) so a killed test still
+  shows how far it got.
+  **kklib integer bug** (`zip1` failed a checksum on Windows only): clang-cl
+  uses SOFA arithmetic (no `__GNUC__`) and 32-bit bigint digits (base 10^9).
+  SOFA needs the *boxed* `4n+1` to fit in an `int32`, i.e. |n| < 2^29, but
+  `KK_SMALLINT_MAX` was `INT32_MAX`: `kk_integer_from_int64` made a small int
+  for 2^29..2^31 while arithmetic made a bigint (two base-10^9 digits are not
+  normalised), and `kk_integer_eq` on a small and a big int returns false
+  without comparing. A CRC in that range compared unequal to itself. Now the
+  SOFA range is the boxed one, and normalisation also turns `KK_SMALLINT_MIN`
+  into a small int. `test/lib/int-norm` checks both orders around the
+  boundaries (reproduce locally with
+  `--ccopts="-DKK_INT_ARITHMETIC=3 -DKK_INT_SOFA_RIGHT_BIAS -U__SIZEOF_INT128__"`).
+  `proc/signal1` is excluded on Windows (it uses `SIGUSR1`/`SIGUSR2` and
+  `kill`). Open: `net/http5` and `net/http9` (HTTP/2) time out on Windows.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.

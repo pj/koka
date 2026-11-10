@@ -167,22 +167,26 @@ to indicate the portable SOFA technique is about 5% (x64) to 10% (M1) faster.
 typedef kk_intf_t kk_smallint_t;
 #define KK_SMALLINT_BITS  (KK_INTF_BOX_BITS(1))
 #define KK_SMALLINT_MAX   (KK_INTF_BOX_MAX(1))
+// note: with SOFA the *boxed* value `4*n+1` must fit in a `kk_smallint_t` (for the
+// sign-extension overflow test), so the small int range is 2 bits less than the type.
+// (keeping the full type range made `kk_integer_from_int` create small ints that the
+//  arithmetic produces as bigints, so equal values compared unequal)
 #elif KK_INTF_SIZE>=16
 typedef int64_t kk_smallint_t;
-#define KK_SMALLINT_BITS  (64)
-#define KK_SMALLINT_MAX   (INT64_MAX)
+#define KK_SMALLINT_BITS  (64-2)
+#define KK_SMALLINT_MAX   (INT64_MAX>>2)
 #elif KK_INTF_SIZE==8
 typedef int32_t kk_smallint_t;
-#define KK_SMALLINT_BITS  (32)
-#define KK_SMALLINT_MAX   (INT32_MAX)
+#define KK_SMALLINT_BITS  (32-2)
+#define KK_SMALLINT_MAX   (INT32_MAX>>2)
 #elif KK_INTF_SIZE==4
 typedef int16_t kk_smallint_t;
-#define KK_SMALLINT_BITS  (16)
-#define KK_SMALLINT_MAX   (INT16_MAX)
+#define KK_SMALLINT_BITS  (16-2)
+#define KK_SMALLINT_MAX   (INT16_MAX>>2)
 #elif KK_INTF_SIZE==2
 typedef int8_t kk_smallint_t;
-#define KK_SMALLINT_BITS  (8)
-#define KK_SMALLINT_MAX   (INT8_MAX)
+#define KK_SMALLINT_BITS  (8-2)
+#define KK_SMALLINT_MAX   (INT8_MAX>>2)
 #else
 # error "platform must be 16, 32, 64, or 128 bits."
 #endif

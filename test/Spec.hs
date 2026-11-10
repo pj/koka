@@ -208,10 +208,12 @@ runKoka cfg kokaDir fp
 -- The output goes to a file and the process is polled: the program runs
 -- under `stack`/`cabal` and `koka`, so killing the direct child would leave
 -- a pipe open (and on Windows a thread blocked reading it cannot be killed).
--- On a timeout the whole process tree is killed.
+-- On a timeout the whole process tree is killed. The test program writes
+-- stdout unbuffered (`KK_STDOUT_UNBUFFERED`) so that its partial output is kept.
 runLimited :: FilePath -> [String] -> IO String
 runLimited cmd argv
   = do limit <- maybe 600 read <$> lookupEnv "KOKA_TEST_TIMEOUT"
+       setEnv "KK_STDOUT_UNBUFFERED" "1"
        tmp <- getTemporaryDirectory
        (outPath, hout) <- openTempFile tmp "koka-test.out"
        (errPath, herr) <- openTempFile tmp "koka-test.err"   -- (GHC cannot open `NUL` on Windows)

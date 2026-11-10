@@ -120,12 +120,6 @@ jobs:
           cache-save-always: true
 
       # the test output does not include the C compiler's messages; show them here
-      - name: Compile diagnostics
-        continue-on-error: true
-        timeout-minutes: 15
-        run: |
-          foreach ($t in "util/dev/win-diag.kk") { stack exec koka -- -e $t }
-
       - name: Test suite (C)
         continue-on-error: true
         timeout-minutes: 100   # a hanging test should not use up the job

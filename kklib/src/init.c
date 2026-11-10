@@ -178,6 +178,10 @@ static void kklib_init(void) {
 #if defined(WIN32) && (defined(_CONSOLE) || defined(__MINGW32__))
   SetConsoleOutputCP(65001);   // set the console to utf-8 instead of OEM page
 #endif
+  // with output to a file stdout is fully buffered; the test runner sets this so that
+  // a test that is killed on a timeout still shows how far it got
+  const char* unbuf = getenv("KK_STDOUT_UNBUFFERED");
+  if (unbuf != NULL && unbuf[0] != 0) setvbuf(stdout, NULL, _IONBF, 0);
   kk_cpu_init();
   atexit(&kklib_done);
 
