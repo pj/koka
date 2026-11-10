@@ -10,8 +10,9 @@ import System.Environment
 import System.FilePath
 import System.IO
 import qualified System.Info as Sys
-import System.Process (readProcessWithExitCode)
-import System.Timeout (timeout)
+import System.Process
+import Control.Concurrent (threadDelay)
+import Control.Exception (evaluate)
 import Text.Regex.TDFA
 import Text.JSON
 import Test.Hspec
@@ -204,13 +205,43 @@ runKoka cfg kokaDir fp
 
 -- Run a test (compile and run) with a time limit, so that a hanging test fails
 -- instead of stopping the suite: `KOKA_TEST_TIMEOUT` seconds (default 600).
+-- The output goes to a file and the process is polled: the program runs
+-- under `stack`/`cabal` and `koka`, so killing the direct child would leave
+-- a pipe open (and on Windows a thread blocked reading it cannot be killed).
+-- On a timeout the whole process tree is killed.
 runLimited :: FilePath -> [String] -> IO String
 runLimited cmd argv
   = do limit <- maybe 600 read <$> lookupEnv "KOKA_TEST_TIMEOUT"
-       res <- timeout (limit * 1000000) (readProcessWithExitCode cmd argv "")
-       case res of
-         Just (_exitCode, stdout, _stderr) -> return stdout
-         Nothing -> return ("test timed out after " ++ show limit ++ " seconds")
+       tmp <- getTemporaryDirectory
+       (outPath, hout) <- openTempFile tmp "koka-test.out"
+       herr <- openFile (if Sys.os == "mingw32" then "NUL" else "/dev/null") WriteMode
+       (Just hin, _, _, ph) <- createProcess (proc cmd argv){ std_in = CreatePipe, std_out = UseHandle hout,
+                                                              std_err = UseHandle herr, create_group = True }
+       hClose hin
+       finished <- waitLimited ph (limit * 20 :: Int)
+       unless finished $ killTree ph
+       out <- readFile outPath
+       _ <- evaluate (length out)
+       removeFile outPath
+       return (if finished then out else "test timed out after " ++ show limit ++ " seconds")
+  where
+    waitLimited ph n
+      = do code <- getProcessExitCode ph
+           case code of
+             Just _ -> return True
+             Nothing | n <= 0    -> return False
+                     | otherwise -> do threadDelay 50000
+                                       waitLimited ph (n - 1)
+    killTree ph
+      = do mpid <- getPid ph
+           case mpid of
+             Just pid | Sys.os == "mingw32"
+               -> void $ readProcessWithExitCode "taskkill" ["/F", "/T", "/PID", show pid] ""
+             Just pid
+               -> void $ readProcessWithExitCode "kill" ["-KILL", "--", "-" ++ show pid] ""
+             Nothing -> return ()
+           terminateProcess ph
+           void $ waitForProcess ph
 
 makeTest :: Cfg -> FilePath -> Spec
 makeTest cfg fp
