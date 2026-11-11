@@ -289,6 +289,12 @@ kk_std_core_exn__error kk_net_read_setup( kk_uv_loop_t loop, kk_box_t bsock, kk_
   if (sock->has_read_cb) { kk_function_drop(cb, ctx); return kk_error_from_uv_errno(UV_EALREADY, ctx); }
   sock->read_cb = cb;
   sock->has_read_cb = true;
+  // for tests: small socket buffers (as on Windows loopback), so that writes block early
+  const char* small = getenv("KK_NET_SMALL_BUFFERS");
+  if (small != NULL && small[0] != 0) {
+    int sz = 16384; uv_send_buffer_size((uv_handle_t*)&sock->tcp, &sz);
+    sz = 16384;     uv_recv_buffer_size((uv_handle_t*)&sock->tcp, &sz);
+  }
   int err = uv_read_start((uv_stream_t*)&sock->tcp, &kk_net_alloc_cb, &kk_net_read_cb);
   if (err != 0) {
     sock->has_read_cb = false;

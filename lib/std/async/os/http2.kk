@@ -241,6 +241,12 @@ fun new-state( buf : bytes, is-client : bool, now : int ) : h2state
 fun send( c : h2conn, data : bytes ) : <async,exn> ()
   c.sock.write-all(data)
 
+// Send without waiting for the write: used while processing received frames,
+// so that a reader never blocks on a full send buffer (both peers would stop
+// reading while they wait to write).
+fun send-queued( c : h2conn, data : bytes ) : <async,exn> ()
+  c.sock.write-queued(data)
+
 // Mark the connection as failed and wake up everyone.
 fun fail( c : h2conn, msg : string ) : async ()
   async-ioc
@@ -328,7 +334,7 @@ fun process( c : h2conn, f : frame ) : <async,exn,ndet> ()
   elif f.ftype == frame-settings then c.on-settings(f)
   elif f.ftype == frame-ping then
     if f.payload.length != 8 then throw-h2(err-frame-size, "invalid PING")
-    if !f.flags.has-flag(flag-ack) then c.send(frame-bytes(frame-ping, flag-ack, 0, f.payload))
+    if !f.flags.has-flag(flag-ack) then c.send-queued(frame-bytes(frame-ping, flag-ack, 0, f.payload))
   elif f.ftype == frame-goaway then
     if f.payload.length < 8 then throw-h2(err-frame-size, "invalid GOAWAY")
     val last = f.payload.be32(0) % 2147483648
@@ -371,7 +377,7 @@ fun on-settings( c : h2conn, f : frame ) : <async,exn> ()
   val st = async-ioc { get-state(c.state) }
   val st1 = apply(st, 0)
   async-ioc { set-state(c, notify-all(st1)) }
-  c.send(frame-bytes(frame-settings, flag-ack, 0, bytes/empty))
+  c.send-queued(frame-bytes(frame-settings, flag-ack, 0, bytes/empty))
 
 fun on-data( c : h2conn, f : frame ) : <async,exn> ()
   if f.sid == 0 then throw-h2(err-protocol, "DATA on stream 0")
@@ -391,7 +397,7 @@ fun on-data( c : h2conn, f : frame ) : <async,exn> ()
   // handler reads the body (see `request-body`)
   val len = f.payload.length
   if len > 0 then
-    c.send(window-update(0, len) ++ (if known && !end-stream && c.is-client then window-update(f.sid, len) else bytes/empty))
+    c.send-queued(window-update(0, len) ++ (if known && !end-stream && c.is-client then window-update(f.sid, len) else bytes/empty))
 
 fun on-header-fragment( c : h2conn, sid : int, flags : int, fragment : bytes ) : <async,exn,ndet> ()
   if fragment.length > max-header-block then throw-h2(err-protocol, "header block too large")
@@ -439,7 +445,7 @@ fun on-request-headers( c : h2conn, sid : int, hs : h2-headers, end-stream : boo
       if sid % 2 == 0 || sid <= last then throw-h2(err-protocol, "invalid stream id " ++ sid.show)
       if closed || active >= server-max-streams then
         async-ioc { set-state(c, get-state(c.state)(c-last-sid = sid)) }
-        c.send(rst-stream(sid, err-refused-stream))
+        c.send-queued(rst-stream(sid, err-refused-stream))
       else
         val ch = channel()
         async-ioc
@@ -491,7 +497,11 @@ fun answered-early( c : h2conn, sid : int ) : async bool
       Nothing -> False
 
 // Send a body as DATA frames, respecting the flow control windows.
+// A client sends the body while another strand awaits the response on the
+// stream channel `ch` (see `h2-request`), so here it waits for more window on
+// a channel of its own, registered as a waiter.
 fun send-body( c : h2conn, sid : int, ch : channel<()>, body : bytes, end-stream : bool ) : <async,exn,ndet> ()
+  val wch : channel<()> = if c.is-client then channel() else ch
   fun go( pos : int ) : <async,exn,ndet> ()
     if pos >= body.length || c.answered-early(sid) then ()
     else
@@ -501,9 +511,11 @@ fun send-body( c : h2conn, sid : int, ch : channel<()>, body : bytes, end-stream
         val k = min(body.length - pos, min(st.c-window, min(s.s-window, st.c-max-frame)))
         if k > 0 then
           set-state(c, st(c-window = st.c-window - k).update-stream(sid, fn(x) x(s-window = x.s-window - k)))
+        elif c.is-client then
+          set-state(c, st(c-waiters = Cons(wch, st.c-waiters)))
         k
       if n <= 0 then
-        c.wait-for(ch)
+        c.wait-for(wch)
         go(pretend-decreasing(pos))
       else
         val last = pos + n >= body.length
@@ -608,8 +620,14 @@ pub fun h2-request( c : h2conn, method : string, scheme : string, authority : st
     c.fail("http2: the connection was closed")
     Nothing
   else
-    if !body.is-empty then c.send-body(sid, ch, body, True)
-    c.await-response(sid, ch)
+    if body.is-empty then c.await-response(sid, ch)
+    else
+      // read the response while the body is sent: a server that streams its
+      // answer back while it reads the body otherwise blocks writing it once
+      // the socket buffers are full, and stops reading the body (a deadlock
+      // with the small loopback buffers on Windows)
+      val (_, res) = interleaved({ c.send-body(sid, ch, body, True) }, { c.await-response(sid, ch) })
+      res
 
 // Wait for the complete response on a stream.
 fun await-response( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet> maybe<(int, h2-headers, bytes)>

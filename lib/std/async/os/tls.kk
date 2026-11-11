@@ -272,6 +272,17 @@ pub fun net-stream/write-all( s : net-stream, data : bytes ) : <async,exn> ()
       flush(s.sock, t)
       if st != 0 then throw(async-ioc { tls-error(t) })
 
+// Queue bytes to be written without waiting until they are written (see
+// `tcp-socket/write-queued`).
+pub fun net-stream/write-queued( s : net-stream, data : bytes ) : <async,exn> ()
+  match s.engine
+    Nothing -> s.sock.write-queued(data)
+    Just(t) ->
+      val st = async-ioc { tls-write(t, data) }
+      val out = async-ioc { tls-take-output(t) }
+      s.sock.write-queued(out)
+      if st != 0 then throw(async-ioc { tls-error(t) })
+
 // Write a string (as UTF-8).
 pub fun net-stream/write-text( s : net-stream, text : string ) : <async,exn> ()
   s.write-all(text.bytes)

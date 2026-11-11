@@ -127,6 +127,19 @@ pub fun write-all( s : tcp-socket, data : bytes ) : <async,exn> ()
   if data.is-empty then () else
     await("net-write", fn(evloop, resume) net-write-setup(evloop, s.hnd, data, resume))
 
+// Queue bytes to be written without waiting until they are written. The write
+// is ordered with the other writes on the socket; an error shows up on a later
+// read or write. (A reader can answer the peer without blocking on a full send
+// buffer, which could deadlock two peers that both wait to write.)
+pub fun write-queued( s : tcp-socket, data : bytes ) : <async,exn> ()
+  if data.is-empty then () else
+    do-sync(fn(evloop) queue-write(evloop, s, data), "net-write-queued")
+
+fun queue-write( evloop : event-loop, s : tcp-socket, data : bytes ) : ioc error<()>
+  match net-write-setup(evloop, s.hnd, data, fn(_) ())
+    Ok(_)    -> Ok(())
+    Error(e) -> Error(e)
+
 // Write a string (as UTF-8) to the socket.
 pub fun write-text( s : tcp-socket, text : string ) : <async,exn> ()
   s.write-all(text.bytes)

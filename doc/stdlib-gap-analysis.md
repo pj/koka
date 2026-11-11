@@ -552,11 +552,17 @@ backends and diffs the output against its `.out` file.
   It now uses `_O_BINARY | _O_NOINHERIT`, as `std/os/fs` already did.
   A failing test now also shows its stderr (the linker's messages were lost:
   two one-off link failures on Linux arm64, `set1` and `seq2`, show no cause).
-  Open: `net/http5` and `net/http9` (HTTP/2) time out on Windows. http9
-  stops at the HTTP/2 echo of a 3 MB body (the server streams it back while
-  the client uploads); http5 fails its h2c part with "connection reset by
-  peer" (it also echoes large bodies) and then hangs. HTTP/1.1 and the other
-  HTTP/2 cases pass there.
+  **HTTP/2 deadlock** (`net/http5` and `net/http9` hung on Windows): both
+  peers awaited a WINDOW_UPDATE (or other) write *in their frame reader*, and
+  the client did not read at all while it sent a body. When a server streams
+  a large body back while reading it, its writes fill the socket buffers, its
+  reader then blocks behind them and stops reading, and the client's writes
+  block too. The 1 MiB HTTP/2 windows fit in the macOS/Linux loopback buffers
+  but not in the small Windows ones. Now frame readers send with
+  `write-queued` (new on `tcp-socket` and `net-stream`: submitted in order,
+  not awaited) and the client awaits the response while it sends the body.
+  `KK_NET_SMALL_BUFFERS` (C backend) shrinks socket buffers to 16 KiB, which
+  reproduces the hang on macOS; `test/net/http2-buffers` sets it.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.
