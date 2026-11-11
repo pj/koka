@@ -344,14 +344,14 @@ getOptions
   = do argv <- getArgs
        return (foldr processOptions (optionsDefault,[]) argv)
 
--- Compile (and run) `util/link-test.kk`, which imports all standard libraries.
+-- Compile `util/link-test.kk`, which imports all standard libraries.
 precompiled :: Cfg -> IO ()
 precompiled cfg
   = do (out,err) <- runKokaErr cfg "" "util/link-test.kk"
-       -- it prints "done@" (the output is sanitized) when run; with `-l` (on
-       -- `--rebuild`) it is only compiled, and the output must have no errors
-       let ok = if "-l" `elem` flags cfg then not ("error" `isInfixOf` out) else "done" `isInfixOf` out
-       unless ok $
+       -- it is only compiled (`-c`): running it (`-e`) leaves the build so that the
+       -- next compile with `--showtypesigs` (test/async, test/medium) rebuilds
+       -- every library, concurrently in the tests
+       when ("error" `isInfixOf` map toLower out) $
          do hPutStrLn stderr ("pre-compiling the standard libraries failed (" ++ unwords (flags cfg) ++ "):\n" ++ out ++ "\n" ++ lastLines 60 err)
             exitFailure
 
@@ -370,7 +370,7 @@ main = do
       stdcfg = if rebuild options then cfg{ flags = flags cfg ++ ["-r", "-l"]} else cfg
   -- (if this fails, tests would compile the libraries concurrently and see each
   -- other's half-written interface files: stop with its output instead)
-  precompiled stdcfg{flags = flags stdcfg ++ ["-e"]}   -- (after `-c`, which would override it)
+  precompiled stdcfg
   -- precompile bench by compiling a dependent file (ensures correct module name resolution)
   runKoka stdcfg "" "test/lazy/queue/bankers.kk"
   -- precompile mpat-lib so test/cgen/mpat.kk loads it from the .kki
@@ -380,7 +380,7 @@ main = do
   runKoka stdcfg "" "test/cgen/specbox-lib.kk"
   -- precompile the syn-nested chain so syn-nested1 emits only its own core
   runKoka stdcfg "" "test/parc/syn-nested1c.kk"
-  precompiled stdcfg{flags = "--target=js" : flags stdcfg ++ ["-e"]} -- precompiled js libraries as well
+  precompiled stdcfg{flags = "--target=js" : flags stdcfg} -- precompiled js libraries as well
   putStrLn "ok."
   let spec = if target options == "names"
                then NameSpec.spec

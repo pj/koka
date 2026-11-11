@@ -577,9 +577,11 @@ backends and diffs the output against its `.out` file.
   silently killed unrelated strands, e.g. the `accept` of a server in the
   other branch of an enclosing `firstof`. A strand now cancels the scope of
   its own interleaving.
-  The test runner now checks that pre-compiling the libraries worked: it ran
-  `util/link-test` with `-e -c`, so `-c` won and it was never run, and its
-  output was ignored. It now stops the run with the compiler's output, and
+  The test runner now checks that pre-compiling the libraries worked (it
+  compiles `util/link-test`, and ignored the output). It now stops the run
+  with the compiler's output when there is an error. (Running link-test as
+  well, with `-e`, made the next compile with `--showtypesigs` rebuild every
+  library, concurrently in the async/medium tests, so it is only compiled.) And
   the first CI run showed that it failed everywhere: **a compiler bug** made
   `std/data/set` crash at `-O1` ("Type.TypeVar.subFind: incompatible kind")
   since `set/seq` was added. The specializer substituted the type arguments
