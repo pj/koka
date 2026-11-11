@@ -16,6 +16,7 @@ import std/core/unsafe
 import std/core/undiv
 
 import async/async
+import async/internal
 import async/channel
 
 
@@ -314,6 +315,10 @@ fun interleave-strands-ex( needall : bool, setup : (interleave : (action : () ->
 // Interleave an action such that all async operations are captured and emit a resumption on the given channel.
 fun interleave-strand(needall : bool, ch : channel<() -> <async,strands<a>|e> ()>, action : () -> <async,strands<a>|e> a ) : <async,strands<a>|e> ()
   strand-init()                   // always initialize to keep outstanding count
+  // the scope of our interleaving: a strand that finishes after the scope was
+  // canceled is resumed in the parent scope (see `interleave-strands-ex`), and
+  // must then still cancel only its siblings, not everything in the parent scope
+  val scope = async-scope
   if is-canceled() then
     strand-done(Canceled)         // don't start any new interleavings once the scope is canceled
   else
@@ -323,7 +328,7 @@ fun interleave-strand(needall : bool, ch : channel<() -> <async,strands<a>|e> ()
       with unsafe-uncancel        // catches any discontinue() (so we can prefer exceptions over cancelations)
       action()
     match res
-      Right(Just(x)) -> { strand-done(Completed(x)); if !needall then cancel-outstanding() }
+      Right(Just(x)) -> { strand-done(Completed(x)); if !needall then cancel-scope(scope) }
       Right(Nothing) -> { strand-done(Canceled) }
-      Left(yld)      -> { strand-done(Finalized(yld)); cancel-outstanding() }
+      Left(yld)      -> { strand-done(Finalized(yld)); cancel-scope(scope) }
 

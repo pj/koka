@@ -11,6 +11,7 @@ import System.FilePath
 import System.IO
 import qualified System.Info as Sys
 import System.Process
+import System.Exit (exitFailure)
 import Control.Concurrent (threadDelay)
 import Control.Exception (evaluate)
 import Text.Regex.TDFA
@@ -343,6 +344,14 @@ getOptions
   = do argv <- getArgs
        return (foldr processOptions (optionsDefault,[]) argv)
 
+-- Compile (and run) `util/link-test.kk`, which imports all standard libraries.
+precompiled :: Cfg -> IO ()
+precompiled cfg
+  = do (out,err) <- runKokaErr cfg "" "util/link-test.kk"
+       unless ("done" `isInfixOf` out) $   -- (the output is sanitized: "done@")
+         do hPutStrLn stderr ("pre-compiling the standard libraries failed (" ++ unwords (flags cfg) ++ "):\n" ++ out ++ "\n" ++ lastLines 60 err)
+            exitFailure
+
 main :: IO ()
 main = do
   setEnv "LC_ALL" "C"  -- for unicode
@@ -356,7 +365,9 @@ main = do
   -- compile all standard libraries before testing so we can run in parallel
   let cfg = initialCfg options
       stdcfg = if rebuild options then cfg{ flags = flags cfg ++ ["-r", "-l"]} else cfg
-  runKoka stdcfg{flags = "-e" : flags stdcfg} "" "util/link-test.kk"
+  -- (if this fails, tests would compile the libraries concurrently and see each
+  -- other's half-written interface files: stop with its output instead)
+  precompiled stdcfg{flags = flags stdcfg ++ ["-e"]}   -- (after `-c`, which would override it)
   -- precompile bench by compiling a dependent file (ensures correct module name resolution)
   runKoka stdcfg "" "test/lazy/queue/bankers.kk"
   -- precompile mpat-lib so test/cgen/mpat.kk loads it from the .kki
@@ -366,7 +377,7 @@ main = do
   runKoka stdcfg "" "test/cgen/specbox-lib.kk"
   -- precompile the syn-nested chain so syn-nested1 emits only its own core
   runKoka stdcfg "" "test/parc/syn-nested1c.kk"
-  runKoka stdcfg{flags = "--target=js":(flags stdcfg)} "" "util/link-test.kk" -- precompiled js libraries as well
+  precompiled stdcfg{flags = "--target=js" : flags stdcfg ++ ["-e"]} -- precompiled js libraries as well
   putStrLn "ok."
   let spec = if target options == "names"
                then NameSpec.spec

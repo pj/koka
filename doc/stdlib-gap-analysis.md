@@ -563,6 +563,26 @@ backends and diffs the output against its `.out` file.
   not awaited) and the client awaits the response while it sends the body.
   `KK_NET_SMALL_BUFFERS` (C backend) shrinks socket buffers to 16 KiB, which
   reproduces the hang on macOS; `test/net/http2-buffers` sets it.
+  http5 then still failed on Windows with "connection reset by peer": its
+  server closes idle connections, and on Windows the reset discards the
+  GOAWAY before the client reads it, so a request sent on the closing
+  connection failed instead of being retried. A request that was alone on
+  the connection and got no answer (or reset) is now retried on a new one
+  (a server only closes an idle connection when it has no streams).
+  `test/net/http2-reset` checks it with a minimal HTTP/2 server on plain TCP.
+  **std/async bug** found with it: when an `interleaved`/`firstof` was
+  canceled (here by an exception in one strand), its other strands are
+  resumed in the *parent* scope so their finalizers run, and a strand that
+  then also finished abnormally canceled the whole parent scope. That
+  silently killed unrelated strands, e.g. the `accept` of a server in the
+  other branch of an enclosing `firstof`. A strand now cancels the scope of
+  its own interleaving.
+  The test runner now checks that pre-compiling the libraries worked: it ran
+  `util/link-test` with `-e -c`, so `-c` won and it was never run, and its
+  output was ignored. A failed pre-compile would let tests compile the
+  libraries concurrently, which fits the truncated `std_data_set.kki` that
+  failed `set1`/`seq2` on Linux arm64 three times; it now stops the run
+  with the compiler's output.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.

@@ -585,7 +585,7 @@ pub fun h2-request( c : h2conn, method : string, scheme : string, authority : st
   // open the stream: wait for a free stream if the peer limits them; the
   // stream id is taken and the headers are sent without an await in between,
   // so streams are opened in order
-  fun open( round : int ) : <async,exn,ndet> (int, bytes)
+  fun open( round : int ) : <async,exn,ndet> (int, bytes, bool)
     val res = async-ioc
       val st = get-state(c.state)
       if st.c-closed then Left(if st.c-error.is-empty then "http2: the connection is closing" else st.c-error)
@@ -596,14 +596,14 @@ pub fun h2-request( c : h2conn, method : string, scheme : string, authority : st
         val sid = st.c-next-sid
         val s = H2stream(sid, ch, [], False, [], False, -1, st.c-init-window)
         set-state(c, st(c-next-sid = sid + 2, c-streams = st.c-streams ++ [s], c-last-used = now))
-        Right(Just((sid, header-frames(sid, block, body.is-empty, st.c-max-frame))))
+        Right(Just((sid, header-frames(sid, block, body.is-empty, st.c-max-frame), st.c-streams.is-empty)))
     match res
       Left(msg) -> throw(msg)
       Right(Just(x)) -> x
       Right(Nothing) ->
         c.wait-for(ch)
         open(pretend-decreasing(round + 1))
-  val (sid, frames) = open(0)
+  val (sid, frames, alone) = open(0)
   with finally
     val unfinished = async-ioc
       val st = get-state(c.state)
@@ -620,14 +620,31 @@ pub fun h2-request( c : h2conn, method : string, scheme : string, authority : st
     c.fail("http2: the connection was closed")
     Nothing
   else
-    if body.is-empty then c.await-response(sid, ch)
-    else
-      // read the response while the body is sent: a server that streams its
-      // answer back while it reads the body otherwise blocks writing it once
-      // the socket buffers are full, and stops reading the body (a deadlock
-      // with the small loopback buffers on Windows)
-      val (_, res) = interleaved({ c.send-body(sid, ch, body, True) }, { c.await-response(sid, ch) })
-      res
+    val res = catch(fn(e) Error(e)) {
+      if body.is-empty then Ok(c.await-response(sid, ch))
+      else
+        // read the response while the body is sent: a server that streams its
+        // answer back while it reads the body otherwise blocks writing it once
+        // the socket buffers are full, and stops reading the body (a deadlock
+        // with the small loopback buffers on Windows)
+        val (_, r) = interleaved({ c.send-body(sid, ch, body, True) }, { c.await-response(sid, ch) })
+        Ok(r)
+    }
+    match res
+      Ok(r) -> r
+      Error(e) ->
+        // A server closes an idle connection only when it has no streams, so a
+        // request that was alone on the connection and got no answer was not
+        // processed: it can be retried, as for a refused stream. (The GOAWAY is
+        // not always seen: on Windows a reset discards the data not yet read.)
+        val unprocessed = alone && async-ioc
+          match get-state(c.state).find-stream(sid)
+            Just(x) -> !x.s-has-headers && x.s-reset < 0
+            Nothing -> False
+        if unprocessed then
+          c.fail("http2: the connection was closed: " ++ e.message)
+          Nothing
+        else throw-exn(e)
 
 // Wait for the complete response on a stream.
 fun await-response( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet> maybe<(int, h2-headers, bytes)>
