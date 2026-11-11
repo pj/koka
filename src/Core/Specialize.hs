@@ -35,7 +35,7 @@ import Core.Core
 import Core.CoreVar
 import Core.Pretty ()
 import Core.Simplify
-import Type.Type (splitFunScheme, Effect, Type, TypeVar, eqType, eqTypes)
+import Type.Type (splitFunScheme, Effect, Type(TVar), TypeVar(..), eqType, eqTypes)
 import Type.TypeVar
 import Type.Pretty
 import Lib.Trace
@@ -304,7 +304,7 @@ comment = unlines . map ("// " ++) . lines
 replaceCall :: Name -> Expr -> DefSort -> [Bool] -> [Expr] -> Maybe [Type] -> SpecM Expr
 replaceCall name expr0 sort bools args mybeTypeArgs
   = do
-      expr <- uniquefyExprU expr0
+      expr <- uniquefyExprU expr0 >>= freshTypeParams
 
       -- extract the specialized parameters
       let ((newParams, newArgs), (speccedParams, speccedArgs))
@@ -350,6 +350,18 @@ replaceCall name expr0 sort bools args mybeTypeArgs
                        comment (unlines [show param <> " = " <> show arg | (param,arg) <- zip speccedParams speccedArgs])
 
       return $ Let [DefRec [specDef]] (App (Var (defTName specDef) InfoNone) newArgs)
+
+-- Give the type parameters of a function fresh ids. The type arguments of a
+-- call are substituted for them, and the definition may come from another
+-- module (an inline definition from its interface), where the ids can be the
+-- same as those of type variables in the type arguments (which then get
+-- substituted again, or with a type of another kind).
+freshTypeParams :: Expr -> SpecM Expr
+freshTypeParams (TypeLam tvs body)
+  = do ids <- mapM (const (uniqueId "spec")) tvs
+       let tvs' = [tv{ typevarId = i } | (tv, i) <- zip tvs ids]
+       return (TypeLam tvs' (subNew (zip tvs (map TVar tvs')) |-> body))
+freshTypeParams expr = return expr
 
 fnTypeParams :: Expr -> [TypeVar]
 fnTypeParams (TypeLam typeParams _) = typeParams

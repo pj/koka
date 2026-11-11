@@ -348,7 +348,10 @@ getOptions
 precompiled :: Cfg -> IO ()
 precompiled cfg
   = do (out,err) <- runKokaErr cfg "" "util/link-test.kk"
-       unless ("done" `isInfixOf` out) $   -- (the output is sanitized: "done@")
+       -- it prints "done@" (the output is sanitized) when run; with `-l` (on
+       -- `--rebuild`) it is only compiled, and the output must have no errors
+       let ok = if "-l" `elem` flags cfg then not ("error" `isInfixOf` out) else "done" `isInfixOf` out
+       unless ok $
          do hPutStrLn stderr ("pre-compiling the standard libraries failed (" ++ unwords (flags cfg) ++ "):\n" ++ out ++ "\n" ++ lastLines 60 err)
             exitFailure
 

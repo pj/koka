@@ -579,10 +579,18 @@ backends and diffs the output against its `.out` file.
   its own interleaving.
   The test runner now checks that pre-compiling the libraries worked: it ran
   `util/link-test` with `-e -c`, so `-c` won and it was never run, and its
-  output was ignored. A failed pre-compile would let tests compile the
-  libraries concurrently, which fits the truncated `std_data_set.kki` that
-  failed `set1`/`seq2` on Linux arm64 three times; it now stops the run
-  with the compiler's output.
+  output was ignored. It now stops the run with the compiler's output, and
+  the first CI run showed that it failed everywhere: **a compiler bug** made
+  `std/data/set` crash at `-O1` ("Type.TypeVar.subFind: incompatible kind")
+  since `set/seq` was added. The specializer substituted the type arguments
+  of a call for the type parameters of an inline definition from another
+  module's interface, whose ids can equal those of type variables in the
+  arguments (here an effect variable `1403` vs the definition's value type
+  parameter `1403`). It now gives the type parameters fresh ids first.
+  With the crash, every test that imports `std/data/set` compiled it itself:
+  concurrently in CI (the truncated `std_data_set.kki` that failed
+  `set1`/`seq2` on arm64), and locally the tests silently used a stale
+  `.kki` from before the change.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.
