@@ -373,6 +373,9 @@ main = do
   precompiled stdcfg
   -- precompile bench by compiling a dependent file (ensures correct module name resolution)
   runKoka stdcfg "" "test/lazy/queue/bankers.kk"
+  -- precompile cgen/tail, which test/cgen/tail2.kk imports (both tests would
+  -- otherwise write its C files at the same time)
+  runKoka stdcfg "" "test/cgen/tail.kk"
   -- precompile mpat-lib so test/cgen/mpat.kk loads it from the .kki
   runKoka stdcfg "" "test/cgen/mpat-lib.kk"
   -- precompile specbox-lib so test/cgen/specbox.kk loads it from the .kki

@@ -577,6 +577,10 @@ backends and diffs the output against its `.out` file.
   silently killed unrelated strands, e.g. the `accept` of a server in the
   other branch of an enclosing `firstof`. A strand now cancels the scope of
   its own interleaving.
+  **Status (2026-11-11)**: the whole suite passes on Windows (498 tests;
+  `signal1` is excluded there), Linux x64 and Linux arm64. The runner also
+  pre-compiles `cgen/tail`, which `cgen/tail2` imports (both tests wrote its
+  C files at the same time).
   The test runner now checks that pre-compiling the libraries worked (it
   compiles `util/link-test`, and ignored the output). It now stops the run
   with the compiler's output when there is an error. (Running link-test as
