@@ -26,6 +26,7 @@ import Common.Range (rangeNull)
 import Common.Syntax
 import Common.Unique (HasUnique)
 import Common.Name
+import Common.NamePrim (nameMaskBuiltin)
 import Common.NameMap (NameMap)
 import qualified Common.NameMap  as M
 import Common.NameSet (NameSet)
@@ -240,8 +241,31 @@ specInnerCalls from to isSpecParam specParamNames expr
         all eqVar (zip specParamNames args)
 
     eqVar (name,Var v _)  = name == v
+    eqVar (name,arg) | isMaskBuiltinEta name arg = True
     eqVar (name,arg)      = trace ("specialize: specInnerCalls: argument does not match: " ++ show name ++ " as " ++ show arg) $
                             False
+
+    -- `fn(x1,..,xn){ @mask-builtin(fn(){ name(x1,..,xn) }) }` lifts the parameter `name` into a larger
+    -- effect with only builtin effects (like `local`) added; `@mask-builtin` is the identity at runtime.
+    -- A recursive call inside a `var` scope passes such a wrapper, and if it is not recognized here the
+    -- call is specialized again with one more wrapper, endlessly.
+    isMaskBuiltinEta name (Lam params _ body)
+      = case stripTypeApp body of
+          App mask [Lam [] _ (App f args)]
+            | isMaskBuiltin mask -> isVarOf name f && length args == length params && and (zipWith isVarOf params args)
+          _ -> False
+    isMaskBuiltinEta _ _ = False
+
+    isMaskBuiltin e = case stripTypeApp e of
+                        Var v _ -> getName v == nameMaskBuiltin
+                        _       -> False
+
+    isVarOf name e = case stripTypeApp e of
+                       Var v _ -> v == name
+                       _       -> False
+
+    stripTypeApp (TypeApp e _) = stripTypeApp e
+    stripTypeApp e             = e
 
     sicAppTo args
       = App varTo (map sicExpr (filterBools (map not isSpecParam) args))

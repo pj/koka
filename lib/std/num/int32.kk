@@ -316,7 +316,7 @@ pub inline fip extern clrsb( i : int32 ) : int
 // Count number of 1-bits (also known as _population count_ or _hamming weight_).
 pub inline fip extern popcount( i : int32 ) : int
   c inline "kk_integer_from_small(kk_bits_popcount32(#1))"
-  js "$std_core_types._int32_bits_popcount"
+  js "$std_core_types._int32_popcount"
 
 // Is the `popcount` even?
 pub inline fip extern parity( i : int32 ) : bool

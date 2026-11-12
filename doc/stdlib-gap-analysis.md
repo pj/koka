@@ -325,8 +325,8 @@ backends and diffs the output against its `.out` file.
 | 1 | `std/core/list` sort | ✅ `sort`, `sort-by`, `sort-on`, `sort-desc`, `is-sorted`, `merge`, `dedup`, `group`, `group-by`, `vector/sort` (stable natural merge sort) |
 | 2 | `std/data/hash` | ✅ MurmurHash3-based `?hash`; deterministic and identical on C and JS |
 | 3 | `std/data/map`, `std/data/set` | ✅ Weight-balanced persistent trees: lookup, insert, remove, alter, union, intersection, difference, split, range queries, `elem-at` |
-| 4 | `std/data/hashmap`, `std/data/hashset` | ✅ Hash buckets in a `map<int,_>` (not a HAMT yet) |
-| 5 | `std/data/imap`, `iset`, `dict` | ✅ As aliases of `map<int,_>`, `set<int>` and `map<string,_>` (not Patricia trees) |
+| 4 | `std/data/hashmap`, `std/data/hashset` | ✅ Hash array mapped trie (32-way branches with a bitmap, collision nodes for equal 32-bit hashes, nodes collapse again on removal; child vectors copied in C/JS, in place when unique). Against the earlier buckets in a `map<int,_>` at `-O2`: 1M int inserts 1.04 → 0.45 s, lookups 0.49 → 0.16 s, removing half 0.51 → 0.27 s, 200k string inserts and lookups 2.5–3× faster. `test/lib/hashmap2` checks it against `std/data/map` under random inserts and removes with fully colliding hashes and hashes that share their low or high bits |
+| 5 | `std/data/imap`, `iset`, `dict` | ✅ As aliases of `map<int,_>`, `set<int>` and `map<string,_>`, so they have the whole `map`/`set` API. Not Patricia trees, on purpose: Koka's `int` is arbitrary precision (a Patricia tree would need a second representation for big keys), and a binary trie is about as deep as the balanced tree, so only `union`-style merges would gain much; for fast lookups use `hashmap<int,_>` |
 | 6 | `std/data/array` | ✅ Mutable growable `array<h,a>` under `st<h>` (use with `run` to stay pure): `push`/`pop` (amortized O(1), doubling), `get`/`set`/`a[i]`/`at`/`modify`, `insert`/`remove-at`, `swap`, `reserve`, `extend`, `clear`, `reverse`, `sort` (stable), `map-in-place`, `foreach(-indexed)`, `foldl`, `find-index`, copying `list`/`vector`/`slice`; updates are in place on both backends (the storage vector is never shared; JS bypasses the copying `kk_ref_vector_assign_borrow`). Reads skip the `hdiv` check, so an array of self-referencing closures could tie a knot without `div` |
 | 7 | `std/data/deque`, `std/data/heap` | ✅ Banker's deque; pairing heap |
 | 8 | `std/core/seq` | ✅ Lazy, pull-based `seq<e,a>` (like OCaml `Seq.t`) and generators (`generate { ... yield(x) ... }`, built from escaping resumptions); `count-from`, `range`, `iterate`, `unfold`, `repeat(edly)`, `cycle`; conversion from lists, vectors, strings and `maybe`; lazy `map`, `filter`, `filter-map`, `take(-while)`, `drop(-while)`, `step-by`, `++`, `concat`, `flat-map`, `zip(-with)`, `indexed`, `scan`, `chunk`, `window`, `intersperse`, `dedup`, `tap`; consumers `list`, `vector`, `foldl`, `foreach`, `find`, `any`/`all`, `length`, `at`, `last`, `sum`, `minimum`/`maximum`, `split-at`, `uncons`, `show`. Not imported by `std/core`. Lazy `seq` conversions for `map`/`set` (plus `seq-from` for ordered ranges), `hashmap`, `hashset`, `deque` and `heap` (ascending), and a lazy directory `walk` in `std/os/fs` |
@@ -421,6 +421,17 @@ backends and diffs the output against its `.out` file.
   the compiler (after type checking) at `-O1` for a call such as
   `range(1,5).filter(is-odd)`; it compiles instantly with `-O0`. Moving all
   recursion into one helper (`filter-step` in `std/core/seq`) avoids it.
+* **The specializer also looped on a recursive call inside a `var` scope.**
+  In `fun fold(t, z, f) ... var acc := z; cs.foreach(fn(c) acc := fold(c, acc, f))`
+  the recursive call passes `f` lifted into the `local` effect, as
+  `fn(x,y){ @mask-builtin(fn(){ f(x,y) }) }`. `specInnerCalls` only
+  recognized the parameter itself, so the call was specialized again with one
+  more wrapper and one more `local` in the effect, forever (at `-O1` and
+  `-O2`; found with the HAMT's `node-foldl`). Fixed here: an eta-expanded
+  `@mask-builtin` wrapper of a specialized parameter counts as that
+  parameter (`@mask-builtin` is the identity at run time).
+* On the JS backend `int32/popcount` called a function that does not exist
+  (`_int32_bits_popcount`; the runtime defines `_int32_popcount`). Fixed here.
 * **Internal error `Core.Core.splitTForall: Expected forall`** for a top-level
   function whose effect row tail `e` appears only in its result effect and
   which performs a handled effect (`walk-dir` in `std/os/fs`, declared
