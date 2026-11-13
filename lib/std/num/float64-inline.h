@@ -14,5 +14,5 @@
 ---------------------------------------------------------------------------*/
 
 static inline double kk_double_abs(double d) {
-  return (isfinite(d) && d < 0.0 ? -d : d);
+  return fabs(d);   // (this was `-d` only for finite `d`, so `abs(-inf)` was `-inf`)
 }

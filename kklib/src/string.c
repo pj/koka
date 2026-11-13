@@ -989,12 +989,70 @@ static kk_string_t kk_double_show_spec(double d, int32_t prec, char spec, kk_con
   return kk_string_alloc_dup_valid_utf8(buf, ctx);
 }
 
+// The fewest significant digits (at most 17) of `d` that read back as `d`:
+// returns their number, and the decimal exponent of the first digit.
+static int kk_double_shortest_digits(double d, int* exp) {
+  char buf[64];
+  int k = 1;
+  for (; k < 17; k++) {
+    snprintf(buf, 64, "%.*e", k - 1, d);
+    if (strtod(buf, NULL) == d) break;
+  }
+  snprintf(buf, 64, "%.*e", k - 1, d);
+  const char* e = strchr(buf, 'e');
+  *exp = (e != NULL ? atoi(e + 1) : 0);
+  // trailing zeros are not needed
+  int n = k;
+  const char* last = (e != NULL ? e - 1 : buf + strlen(buf) - 1);
+  while (n > 1 && *last == '0') { n--; last--; }
+  return n;
+}
+
+// Remove trailing zeros after the dot (and the dot itself if nothing remains).
+static void kk_trim_fraction_zeros(char* buf) {
+  char* dot = strchr(buf, '.');
+  if (dot == NULL) return;
+  char* end = buf + strlen(buf) - 1;
+  while (end > dot && *end == '0') { *end-- = 0; }
+  if (end == dot) *end = 0;
+}
+
+// With a negative precision `prec`, show `d` with the fewest digits that read
+// back as `d`, but at most `-prec` digits after the dot. (The JavaScript
+// backend does the same in `_double_show_fixed` and `_double_show_exp`.)
 kk_string_t kk_double_show_fixed(double d, int32_t prec, kk_context_t* ctx) {
-  return kk_double_show_spec(d, prec, prec < 0 ? 'g' : 'f', ctx);
+  if (prec >= 0 || !isfinite(d)) return kk_double_show_spec(d, prec, 'f', ctx);
+  int x;
+  int n = kk_double_shortest_digits(d, &x);
+  int decimals = n - 1 - x;
+  if (decimals < 0) decimals = 0;
+  if (decimals > -prec) decimals = -prec;
+  if (decimals > 48) decimals = 48;
+  char buf[400];
+  snprintf(buf, 400, "%.*f", decimals, d);
+  kk_trim_fraction_zeros(buf);
+  return kk_string_alloc_dup_valid_utf8(buf, ctx);
 }
 
 kk_string_t kk_double_show_exp(double d, int32_t prec, kk_context_t* ctx) {
-  return kk_double_show_spec(d, prec, prec < 0 ? 'g' : 'e', ctx);
+  if (prec >= 0 || !isfinite(d)) return kk_double_show_spec(d, prec, 'e', ctx);
+  int x;
+  int n = kk_double_shortest_digits(d, &x);
+  int decimals = n - 1;
+  if (decimals > -prec) decimals = -prec;
+  char buf[64];
+  snprintf(buf, 64, "%.*e", decimals, d);
+  // trim zeros of the mantissa, and an exponent of zero
+  char* e = strchr(buf, 'e');
+  char exppart[16] = "";
+  if (e != NULL) {
+    int ex = atoi(e + 1);
+    if (ex != 0) snprintf(exppart, 16, "e%c%02d", (ex < 0 ? '-' : '+'), (ex < 0 ? -ex : ex));
+    *e = 0;
+  }
+  kk_trim_fraction_zeros(buf);
+  strncat(buf, exppart, 63 - strlen(buf));
+  return kk_string_alloc_dup_valid_utf8(buf, ctx);
 }
 
 kk_string_t kk_double_show(double d, int32_t prec, kk_context_t* ctx) {

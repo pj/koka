@@ -8,6 +8,11 @@
     "time3.kk",
     "time8.kk"
   ],
+  "exclude-target": {
+    "js": [
+      "sync-condition.kk"
+    ]
+  },
   "exclude-platform": {
     "linux-arm64": [
       "ddouble1.kk",

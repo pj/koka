@@ -213,7 +213,8 @@ pub fip fun max( x : float64, y : float64 ) : float64
 
 // Show a `:float64` as a string.
 // If `d >= 1.0e-5` and `d < 1.0e+21`, `show-fixed` is used and otherwise `show-exp`.
-// Default `precision` is `-17`.
+// Default `precision` is `-17`: the shortest digits that read back as `d` exactly
+// (so `0.1.show == "0.1"` and `(0.1 + 0.2).show == "0.30000000000000004"`).
 pub fun show( d : float64, precision : int = -17 ) : string
   val dabs = d.abs
   if dabs >= 1.0e-5 && dabs < 1.0e+21
@@ -223,7 +224,8 @@ pub fun show( d : float64, precision : int = -17 ) : string
 // Show a `:float64` fixed-point notation.
 // The optional `precision` (= `-2`) specifies the maximum precision.
 // If `>=0` it specifies the number of digits behind the dot (up to `20` max).
-// If negative, then at most the absolute value of `precision` digits behind the dot are used.
+// If negative, then the shortest digits that read back as `d` exactly are used, but at
+// most the absolute value of `precision` digits behind the dot.
 // This may still show a number in exponential notation if the it is too small or large,
 // in particular, for  a `d` where `d > 1.0e21` or `d < 1.0e-15`, or if
 // `precision.abs > 17`, the `show-exp` routine is used.
@@ -241,7 +243,8 @@ extern show-fixedx( d : float64, prec : int32 ) : string
 // Show a `:float64` in exponential (scientific) notation.
 // The optional `precision` (= `-17`) specifies the precision.
 // If `>=0` it specifies the number of digits behind the dot (up to `17` max).
-// If negative, then at most the absolute value of `precision` digits behind the dot are used.
+// If negative, then the shortest digits that read back as `d` exactly are used, but at
+// most the absolute value of `precision` digits behind the dot.
 pub fun show-exp( d : float64, precision : int = -17 )
   show-expx(d,precision.int32)
 

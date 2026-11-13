@@ -75,6 +75,12 @@ instance JSON Cfg where
                  pexclude = case valFromObj "exclude-platform" obj of
                               Ok v -> platformExcludes v
                               _    -> []
+                 -- "exclude-target": {"js": [...]}: tests that are skipped on that backend
+                 -- (recorded as "js:name", see `discoverTests`)
+                 texclude = case valFromObj "exclude-target" obj of
+                              Ok (JSObject tobj) -> concat [ map ((tgt ++ ":") ++) (case xs of { JSArray ys -> mapMaybe toString ys; _ -> [] })
+                                                           | (tgt, xs) <- fromJSObject tobj ]
+                              _ -> []
                  platformExcludes v
                    = case v of
                        JSObject pobj -> concatMap matchPlatform (fromJSObject pobj)
@@ -102,7 +108,7 @@ instance JSON Cfg where
                           "x86_64"  -> "x64"
                           "amd64"   -> "x64"
                           a          -> a
-               in Ok (makeCfg flags optionsDefault (exclude ++ pexclude))
+               in Ok (makeCfg flags optionsDefault (exclude ++ pexclude ++ texclude))
         JSNull     -> Ok (makeCfg [] optionsDefault [])
         JSString s -> Ok (makeCfg (words (fromJSString s)) optionsDefault [])
         _          -> Error ("invalid JSON object")
@@ -284,7 +290,8 @@ discoverTests cfg0 p = discover cfg0 "" p
                  else do
                    fs0  <- runIO (sort <$> listDirectory p)
                    cfg' <- runIO (readConfigFile cfg p)
-                   let fs   = filter (not . fexclude cfg') fs0  -- todo: make ignoring the failing optional
+                   let tgt  = if null (target (options cfg')) then "c" else target (options cfg')
+                       fs   = filter (\f -> not (fexclude cfg' f) && not (fexclude cfg' (tgt ++ ":" ++ f))) fs0  -- todo: make ignoring the failing optional
                        with = if cat == "" then id else describe cat
                    with $ mapM_ (\f -> discover cfg' f (p </> f)) fs
 

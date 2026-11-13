@@ -1,6 +1,6 @@
 Just("koka")
 Just(2)
-(Just(3),Just(3.1415899999999999),Just(123456789012345678901234567890))
+(Just(3),Just(3.14159),Just(123456789012345678901234567890))
 (Just(True),True,True)
 Just("line\nbreak \"quoted\" \xE9 \U01F600 tab\t")
 ["name","tags","version","pi","nested","esc"]

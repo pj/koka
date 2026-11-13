@@ -260,11 +260,26 @@ codeGenJS term flags sequential entry outBase core
                do return (\_ -> return (LinkExe outHtml (runSystemEcho term flags (dquote outHtml ++ " &"))))
               _ ->
                do let stksize = if (stackSize flags == 0) then 100000 else (stackSize flags `div` 1024)
-                  return (\_ -> return (LinkExe outjs (runCommand term flags
-                                           ([node flags,"--stack-size=" ++ show stksize,outjs] ++ execOpts flags)
-                                        )))
+                      cmd = if (stackSize flags == 0 && not onWindows)
+                              then nodeWithStack (node flags) ([outjs] ++ execOpts flags)
+                              else [node flags,"--stack-size=" ++ show stksize,outjs] ++ execOpts flags
+                  return (\_ -> return (LinkExe outjs (runCommand term flags cmd)))
 
 
+
+-- Run node with a stack as large as the operating system allows: the soft
+-- stack limit is raised to the hard limit, and V8's `--stack-size` is set to
+-- 90% of it (at most 100000 KiB). A `--stack-size` beyond the actual stack makes
+-- deep recursion crash with a segmentation fault instead of a `RangeError`
+-- (the default 8 MiB stack with `--stack-size=100000` did).
+nodeWithStack :: FilePath -> [String] -> [String]
+nodeWithStack nodeExe args
+  = ["sh", "-c", script, "sh", nodeExe] ++ args
+  where
+    script = unwords
+      [ "H=$(ulimit -Hs); if [ \"$H\" = unlimited ]; then ulimit -s unlimited 2>/dev/null; else ulimit -s \"$H\" 2>/dev/null; fi;"
+      , "L=$(ulimit -s); if [ \"$L\" = unlimited ]; then N=100000; else N=$((L * 9 / 10)); if [ $N -gt 100000 ]; then N=100000; fi; fi;"
+      , "NODE=\"$1\"; shift; exec \"$NODE\" --stack-size=$N \"$@\"" ]
 
 {---------------------------------------------------------------
   C backend

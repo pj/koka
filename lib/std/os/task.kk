@@ -11,10 +11,16 @@ Experimental: Parallel tasks.
 
 Note: very experimental and may not work as intended :-)
 See ``test/bench/koka/binarytrees.kk`` for example usage.
+
+On the JavaScript backend there are no threads: a task runs when it is
+created, and `await` returns its result.
 */
 module std/os/task
 
 import std/num/int32
+
+extern import
+  js file "task-inline.js"
 
 // A `:promise<a>` can be `await`ed for a result.
 abstract struct promise<a>
@@ -22,12 +28,15 @@ abstract struct promise<a>
 
 noinline extern unsafe_task( work : () -> a ) : any
   c "kk_task_schedule"
+  js "_task_schedule"
 
 noinline extern unsafe_await( p : any ) : a
   c "kk_promise_get"
+  js "_task_await"
 
 extern prim-task-set-default-concurrency( thread-count : ssize_t  ) : ioc ()
   c "kk_task_set_default_concurrency"
+  js inline "$std_core_types.Unit"
 
 pub fun task-set-default-concurrency( thread-count : int ) : ioc ()
   prim-task-set-default-concurrency( thread-count.ssize_t )
@@ -68,12 +77,15 @@ abstract struct lvar<a>
 
 noinline extern unsafe-lvar( init : a ) : any
   c "kk_lvar_alloc"
+  js "_lvar_alloc"
 
 noinline extern unsafe-put( lvar : any, x : a, monotonic-combine : (a,a) -> a ) : ()
   c "kk_lvar_put"
+  js "_lvar_put"
 
 noinline extern unsafe-get( lvar : any, bot : a, is-gte : (a,a) -> int32 ) : ndet a
   c "kk_lvar_get"
+  js "_lvar_get"
 
 pub noinline fun lvar( init : a ) : lvar<a>
   Lvar( unsafe-lvar(init) )
