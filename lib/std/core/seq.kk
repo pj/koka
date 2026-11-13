@@ -224,8 +224,9 @@ fun skip-while( s : seq<e,a>, pred : a -> <div|e> bool ) : <div|e> step<e,a>
 pub fun filter( s : seq<e,a>, pred : a -> <div|e> bool ) : seq<e,a>
   Seq(fn() filter-step(s, pred))
 
-// (All recursion stays in this helper: a `filter` that calls itself from its
-// closure sends the -O1 specializer into an endless loop.)
+// (All recursion stays in this helper. A `filter` that called itself from its
+// closure used to send the -O1 specializer into an endless loop; the compiler
+// no longer does that, see `Core/Specialize.hs`.)
 fun filter-step( s : seq<e,a>, pred : a -> <div|e> bool ) : <div|e> step<e,a>
   match s.force()()
     Done -> Done

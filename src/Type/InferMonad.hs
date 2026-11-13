@@ -71,6 +71,7 @@ module Type.InferMonad( Inf, InfGamma
                       , withSkolemized, checkSkolemEscape
                       , substImplicitConstraints
                       , scopeImplicitConstraints
+                      , resolvePendingImplicitConstraints
 
                       , typeError
                       , contextError
@@ -1638,6 +1639,14 @@ resolveImplicitConstraints free ics
            solvedImplicitConstraint (icEvidence ic) tp
            return $ Core.makeTDef (Core.TName (icEvidence ic) tp) evidence
 
+
+-- | Resolve all pending implicit constraints (for a top-level recursive group:
+-- its definitions are generalized each in their own constraint scope, so the
+-- constraints from their bodies, like `hdiv` from reading a reference, are
+-- only determined once the group's types are checked against their signatures).
+resolvePendingImplicitConstraints :: Inf (Core.Expr -> Core.Expr)
+resolvePendingImplicitConstraints
+  = tryResolveImplicitConstraints True tvsEmpty
 
 tryResolveImplicitConstraints :: Bool -> Tvs -> Inf (Core.Expr -> Core.Expr)
 tryResolveImplicitConstraints close free

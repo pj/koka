@@ -35,8 +35,9 @@ analyzeDivergence defs0
   = -- trace (" analyzeDivergence: " ++ show (map defName defs0)) $
     let mayDiverge = case defs0 of
                       [] -> False
-                      (def1:def2:rest) 
-                        -> True -- for mutual recursion, we assume it is divergent for now
+                      (def1:def2:rest)
+                        -> let (DefRec defs) = uniquefyDefGroup (DefRec defs0)
+                           in isDivergentGroup defs
                       [def0]
                         -> let (DefRec [def1]) = uniquefyDefGroup (DefRec [def0])
                            in isDivergent (def1)
@@ -67,7 +68,9 @@ isDivFun :: Name -> [TName] -> Expr -> Bool
 isDivFun name [] body
   = True
 isDivFun name pars body
-  = let (_,calls) = runDiv name pars (divExpr body)
+  = let (_,calls0) = runDiv [name] pars (divExpr body)
+        -- the size of each argument compared to the parameter at the same position
+        calls     = [ [ if k < length szs then (szs !! k) else Unknown | (k,szs) <- zip [0..] args ] | (_,args) <- calls0 ]
         orders    = map transpose (permutations (transpose calls)) 
         divergent = not (any isAnOrder orders)
         isAnOrder cs
@@ -82,10 +85,42 @@ isDivFun name pars body
 
 
 
+-- | Mutually recursive definitions: each function `f` gets a parameter `p(f)`,
+-- and every call in the group from `f` to `g` must pass, as parameter `p(g)`,
+-- an argument that is smaller than the parameter `p(f)` of `f` (a part of it
+-- found by pattern matching, or an argument marked with `pretend-decreasing`).
+-- Then every chain of calls decreases. (A sufficient condition only.)
+isDivergentGroup :: [Def] -> Bool
+isDivergentGroup defs
+  = case mapM funParams defs of
+      Nothing  -> True
+      Just pss ->
+        let names  = map defName defs
+            calls  = [ (defName d, runDivCalls names pars body) | (d,(pars,body)) <- zip defs pss ]
+            counts = map (length . fst) pss
+            -- all choices of a parameter per function (bounded, to keep this cheap)
+            choices = sequence [ [0..n-1] | n <- counts ]
+            ok choice
+              = let pos f = lookup f (zip names choice)
+                in all (\(caller,cs) -> all (decreases (pos caller) . (\(callee,args) -> (pos callee,args))) cs) calls
+            decreases (Just pf) (Just pg, args)
+              = pg < length args && (args !! pg) `atSize` pf == Lt
+            decreases _ _ = False
+            atSize szs j = if j < length szs then szs !! j else Unknown
+        in any (> 0) counts && (product counts > 4096 || not (any ok choices))
+  where
+    funParams def = params (defExpr def)
+    params expr = case expr of
+                    TypeLam _ e    -> params e
+                    TypeApp e _    -> params e
+                    Lam pars _ body | not (null pars) -> Just (pars, body)
+                    _              -> Nothing
+    runDivCalls names pars body = snd (runDiv names pars (divExpr body))
+
 newtype Div a = Div (Rel -> (a,[Call]))
 
-data Rel   = Rel Name [S.NameSet] [S.NameSet]  -- set of equal and smaller variables per argument
-type Call  = [Size]       -- arguments sizes of a recursive call
+data Rel   = Rel [Name] [S.NameSet] [S.NameSet]  -- the recursive group, and the set of equal and smaller variables per parameter
+type Call  = (Name,[[Size]])  -- a recursive call: the callee, and per argument its size compared to each parameter
 data Size  = Lt | Eq | Unknown
            deriving (Eq,Ord)
 
@@ -95,9 +130,9 @@ instance Show Size where
               Eq -> "="
               Unknown -> "?"
 
-runDiv :: Name -> [TName] -> Div a -> (a,[Call])
-runDiv defName args (Div d)
-  = let rel = Rel defName (map (S.singleton . getName) args) (replicate (length args) S.empty)
+runDiv :: [Name] -> [TName] -> Div a -> (a,[Call])
+runDiv defNames args (Div d)
+  = let rel = Rel defNames (map (S.singleton . getName) args) (replicate (length args) S.empty)
     in d rel
 
 instance Functor Div where
@@ -123,9 +158,9 @@ withRel :: Rel -> Div a -> Div a
 withRel rel (Div d)
   = Div (\rel0 -> d rel)
 
-addCall :: Name -> [Size] -> Div ()
+addCall :: Name -> [[Size]] -> Div ()
 addCall name call
-  = Div (\rel -> ((),[call]))
+  = Div (\rel -> ((),[(name,call)]))
 
 
 at :: [S.NameSet] -> Int -> S.NameSet
@@ -136,13 +171,13 @@ at xs i
 
 isRecursiveCall :: Name -> Div Bool
 isRecursiveCall name
-  = do (Rel rname _ _) <- getRel
-       return (rname == name)
+  = do (Rel rnames _ _) <- getRel
+       return (name `elem` rnames)
 
 lookupSize :: Name -> Int -> Name -> Div Size
 lookupSize defName argPos argName
-  = do (Rel rname eqs lts) <- getRel
-       if (rname /= defName)
+  = do (Rel rnames eqs lts) <- getRel
+       if (not (defName `elem` rnames))
         then return Unknown
         else let equal = eqs `at` argPos
                  lower = lts `at` argPos
@@ -156,7 +191,7 @@ addRelation :: Size -> Name -> Name -> Div a -> Div a
 addRelation sz name1 name2 div
   = if (sz == Unknown)
      then div
-     else do (Rel rname eqs lts) <- getRel
+     else do (Rel rnames eqs lts) <- getRel
              let (eqs',lts') = unzip (zipWith add eqs lts)
                  add eq lt   = if (S.member name1 eq)
                                 then case sz of
@@ -166,7 +201,7 @@ addRelation sz name1 name2 div
                                 else if (S.member name1 lt)
                                       then (eq,S.insert name2 lt)
                                       else (eq,lt)
-             withRel (Rel rname eqs' lts') div     
+             withRel (Rel rnames eqs' lts') div     
 
 
 
@@ -185,15 +220,17 @@ divExpr expr
         -> divExpr (App var args)
       App (Var tname info) args
         -> do isRec <- isRecursiveCall (getName tname)
-              if isRec 
-                then do call <- mapM (argumentSize (getName tname)) (zip [0..] args) -- todo: should we add 'Unknown's for partial applications?
+              if isRec
+                then do (Rel _ eqs _) <- getRel
+                        -- each argument compared to each parameter of the current function
+                        call <- mapM (\arg -> mapM (\j -> argumentSize (getName tname) (j,arg)) [0..length eqs - 1]) args -- todo: should we add 'Unknown's for partial applications?
                         addCall (getName tname) call
                 else return ()
               mapM_ divExpr args
 
       Var tname info  -- recursive call may appear as argument, say id(recfun)(x)
         -> do isRec <- isRecursiveCall (getName tname)
-              if isRec then addCall (getName tname) [Unknown] else return ()
+              if isRec then addCall (getName tname) [[Unknown]] else return ()
               
       App f args        
         -> do divExpr f

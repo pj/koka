@@ -191,8 +191,14 @@ inferDefGroup topLevel (DefRec defs0) cont
        -- hack: we map from the name range since there may be overloaded names, and the types are not fully determined yet..
        let coreMap = M.fromList (map (\(def,tp) -> (binderName (defBinder def), (def,tp))) (zip defs assumed))
        -- check assumed types agains inferred types
-       coreGroups2 <- mapMDefs (\cdef -> inferRecDef2 topLevel cdef ((Core.defTName cdef) `elem` concat divTNames) (M.find (unqualify $ Core.defName cdef) coreMap)) coreGroups1
+       coreGroups2X <- mapMDefs (\cdef -> inferRecDef2 topLevel cdef ((Core.defTName cdef) `elem` concat divTNames) (M.find (unqualify $ Core.defName cdef) coreMap)) coreGroups1
        -- traceCoreDefGroups coreGroups2
+       -- at the top level, nothing else resolves the constraints left from the
+       -- group's bodies (which crashed with "no empty iconstraints" for a
+       -- recursive function that reads a reference to a list of functions)
+       coreGroups2 <- if not topLevel then return coreGroups2X
+                       else do coref <- resolvePendingImplicitConstraints
+                               mapMDefs (\cdef -> return cdef{ Core.defExpr = coref (Core.defExpr cdef) }) coreGroups2X
        -- add range info (for documentation)
        mod <- getModuleName
        mapMDefs_ (\cdef -> addRangeInfoCoreDef topLevel mod (fst (M.find (unqualify $ Core.defName cdef) coreMap)) cdef) coreGroups2

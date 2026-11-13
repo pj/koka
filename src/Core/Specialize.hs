@@ -18,7 +18,7 @@ import Data.Monoid((<>), Alt(..), Endo(..))
 import Data.Maybe (mapMaybe, fromMaybe, catMaybes, isJust, fromJust)
 import Data.Function
 
-import Control.Monad(guard)
+import Control.Monad(guard, forM)
 import Lib.PPrint
 import Common.Failure (failure, HasCallStack)
 import Common.File (splitOn)
@@ -113,23 +113,74 @@ specOneDef def
 -- forceExpr e = foldExpr (const (+1)) 0 e `seq` e
 
 specOneExpr :: Name -> Expr -> SpecM Expr
-specOneExpr thisDefName
-  = rewriteTopDownM $ \e ->
-    case e of
-      App (Var (TName name _) _) args
-        -> go name e
-      App (TypeApp (Var (TName name _) _) typVars) args
-        -> go name e
-      e -> pure e
+specOneExpr thisDefName expr
+  = specExpr [] expr
   where
-    go name e
+    -- `active`: the functions whose specialized body is being rewritten, innermost
+    -- first. A function is not specialized more than `maxNesting` times inside its
+    -- own specializations (and never in its own definition): the recursive calls of
+    -- a specialized function are normally redirected by `specInnerCalls`, but not
+    -- when they are indirect, for example through the monadic lift of an
+    -- effect-polymorphic function (`@open-none2(filter,rest,pred)` in a
+    -- `@mlift-filter` helper), and then each specialization contained a new call to
+    -- specialize, endlessly. (Nested specializations with different arguments are
+    -- useful, see `test/cgen/specialize/twostep-large2`, so they are bounded rather
+    -- than forbidden.)
+    maxNesting = 4
+    specExpr :: [Name] -> Expr -> SpecM Expr
+    specExpr active e
+      = do mbSpec <- trySpec active e
+           case mbSpec of
+             Just (name, e') -> specChildren (name:active) e'
+             Nothing         -> specChildren active e
+
+    trySpec active e
+      = case e of
+          App (Var (TName name _) _) args              -> go active name e
+          App (TypeApp (Var (TName name _) _) _) args  -> go active name e
+          _ -> pure Nothing
+
+    go active name e
        = do mbSpecDef <- speclookup name
             case mbSpecDef of
-              Nothing -> pure e
               Just specDef
-                | inlineName specDef /= thisDefName -> -- trace ("specialize " <> show (inlineName specDef) <> " in " <> show thisDefName) $
-                                                       specOneCall specDef e   -- don't specialize ourselves
-                | otherwise -> pure e
+                | inlineName specDef /= thisDefName   -- don't specialize ourselves
+                , length (filter (== inlineName specDef) active) < maxNesting
+                -> do e' <- specOneCall specDef e
+                      pure (if isSpecialized e e' then Just (inlineName specDef, e') else Nothing)
+              _ -> pure Nothing
+
+    -- `specOneCall` returns its argument unchanged when it does not specialize
+    isSpecialized e e' = case (e, e') of
+                           (App f1 _, App f2 _) -> not (sameHead f1 f2)
+                           _                    -> True
+    sameHead (Var v1 _) (Var v2 _)             = v1 == v2
+    sameHead (TypeApp e1 _) (TypeApp e2 _)     = sameHead e1 e2
+    sameHead _ _                               = False
+
+    specChildren active e
+      = let rec = specExpr active
+        in case e of
+          Lam params eff body -> Lam params eff <$> rec body
+          Var _ _             -> pure e
+          App fun xs          -> App <$> rec fun <*> mapM rec xs
+          TypeLam types body  -> TypeLam types <$> rec body
+          TypeApp body types  -> (\b -> TypeApp b types) <$> rec body
+          Con _ _             -> pure e
+          Lit _               -> pure e
+          Let binders body    ->
+            do newBinders <- forM binders $ \binder ->
+                 case binder of
+                   DefNonRec def -> do fexpr <- rec (defExpr def)
+                                       pure (DefNonRec def{ defExpr = fexpr, defType = typeOf fexpr })
+                   DefRec defs   -> fmap DefRec $ forM defs $ \def ->
+                                      do fexpr <- rec (defExpr def)
+                                         pure def{ defExpr = fexpr, defType = typeOf fexpr }
+               Let newBinders <$> rec body
+          Case cases branches ->
+            Case <$> mapM rec cases
+                 <*> forM branches (\(Branch patterns guards) ->
+                        Branch patterns <$> forM guards (\(Guard e1 e2) -> Guard <$> rec e1 <*> rec e2))
 
 filterBools :: [Bool] -> [a] -> [a]
 filterBools bools as
