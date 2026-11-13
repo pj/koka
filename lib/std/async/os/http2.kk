@@ -186,6 +186,7 @@ struct h2stream
   s-done : bool               // the peer ended the stream
   s-reset : int               // the RST_STREAM code, or -1
   s-window : int              // what we may still send on the stream
+  s-streaming : bool          // client: the body is read as a stream (its window is given back as it is read)
 
 struct h2state
   c-buf : bytes               // received bytes that are not yet a complete frame
@@ -383,21 +384,21 @@ fun on-data( c : h2conn, f : frame ) : <async,exn> ()
   if f.sid == 0 then throw-h2(err-protocol, "DATA on stream 0")
   val data = f.frame-content
   val end-stream = f.flags.has-flag(flag-end-stream)
-  val known = async-ioc
+  val collect = async-ioc
     val st = get-state(c.state)
     match st.find-stream(f.sid)
       Just(s) ->
         emit-io(s.s-ch, ())
         val s1 = s(s-body = if data.is-empty then s.s-body else Cons(data, s.s-body), s-done = s.s-done || end-stream)
         set-state(c, st.update-stream(f.sid, fn(_) s1))
-        True
+        c.is-client && !s.s-streaming
       Nothing -> False
   // give the connection window back right away; the stream window too on a
-  // client (it collects the body), while a server gives it back as the
-  // handler reads the body (see `request-body`)
+  // client that collects the body, while a server, or a client that streams
+  // the body, gives it back as the body is read (see `stream-body`)
   val len = f.payload.length
   if len > 0 then
-    c.send-queued(window-update(0, len) ++ (if known && !end-stream && c.is-client then window-update(f.sid, len) else bytes/empty))
+    c.send-queued(window-update(0, len) ++ (if collect && !end-stream then window-update(f.sid, len) else bytes/empty))
 
 fun on-header-fragment( c : h2conn, sid : int, flags : int, fragment : bytes ) : <async,exn,ndet> ()
   if fragment.length > max-header-block then throw-h2(err-protocol, "header block too large")
@@ -450,7 +451,7 @@ fun on-request-headers( c : h2conn, sid : int, hs : h2-headers, end-stream : boo
         val ch = channel()
         async-ioc
           val st = get-state(c.state)
-          val s = H2stream(sid, ch, hs, True, [], end-stream, -1, st.c-init-window)
+          val s = H2stream(sid, ch, hs, True, [], end-stream, -1, st.c-init-window, False)
           set-state(c, st(c-last-sid = sid, c-streams = st.c-streams ++ [s]))
         c.queue.emit(Just(sid))
 
@@ -580,39 +581,8 @@ pub fun h2-request( c : h2conn, method : string, scheme : string, authority : st
                     headers : list<(string, string)>, body : bytes ) : <async,exn,ndet> maybe<(int, h2-headers, bytes)>
   val ch = channel()
   val hs = [(":method", method), (":scheme", scheme), (":authority", authority), (":path", path)] ++ headers.h2-filter-headers
-  val block = hpack-encode(hs)
-  val now = now-ms()
-  // open the stream: wait for a free stream if the peer limits them; the
-  // stream id is taken and the headers are sent without an await in between,
-  // so streams are opened in order
-  fun open( round : int ) : <async,exn,ndet> (int, bytes, bool)
-    val res = async-ioc
-      val st = get-state(c.state)
-      if st.c-closed then Left(if st.c-error.is-empty then "http2: the connection is closing" else st.c-error)
-      elif st.c-streams.length >= st.c-max-streams then
-        set-state(c, st(c-waiters = Cons(ch, st.c-waiters)))
-        Right(Nothing)
-      else
-        val sid = st.c-next-sid
-        val s = H2stream(sid, ch, [], False, [], False, -1, st.c-init-window)
-        set-state(c, st(c-next-sid = sid + 2, c-streams = st.c-streams ++ [s], c-last-used = now))
-        Right(Just((sid, header-frames(sid, block, body.is-empty, st.c-max-frame), st.c-streams.is-empty)))
-    match res
-      Left(msg) -> throw(msg)
-      Right(Just(x)) -> x
-      Right(Nothing) ->
-        c.wait-for(ch)
-        open(pretend-decreasing(round + 1))
-  val (sid, frames, alone) = open(0)
-  with finally
-    val unfinished = async-ioc
-      val st = get-state(c.state)
-      val s = st.find-stream(sid)
-      set-state(c, notify-all(st(c-streams = st.c-streams.filter(fn(x) x.s-sid != sid))))
-      match s
-        Just(x) -> !x.s-done && x.s-reset < 0 && !st.c-closed
-        Nothing -> False
-    if unfinished then catch(fn(_) (), { c.send(rst-stream(sid, err-cancel)) })
+  val (sid, frames, alone) = c.open-stream(ch, hpack-encode(hs), body.is-empty, False, 0)
+  with finally { c.close-stream(sid) }
   // if the request cannot even be sent, the connection was closed (for example
   // by an idle timeout of the server) and the request can be retried
   val sent = catch(fn(_) False, { c.send(frames); True })
@@ -633,18 +603,121 @@ pub fun h2-request( c : h2conn, method : string, scheme : string, authority : st
     match res
       Ok(r) -> r
       Error(e) ->
-        // A server closes an idle connection only when it has no streams, so a
-        // request that was alone on the connection and got no answer was not
-        // processed: it can be retried, as for a refused stream. (The GOAWAY is
-        // not always seen: on Windows a reset discards the data not yet read.)
-        val unprocessed = alone && async-ioc
-          match get-state(c.state).find-stream(sid)
-            Just(x) -> !x.s-has-headers && x.s-reset < 0
-            Nothing -> False
-        if unprocessed then
+        if c.unprocessed(sid, alone) then
           c.fail("http2: the connection was closed: " ++ e.message)
           Nothing
         else throw-exn(e)
+
+// Open a stream: wait for a free stream if the peer limits them. The stream
+// id is taken and the header frames are made without an await in between, so
+// streams are opened in order (the caller sends the frames right away).
+// Returns the stream id, the header frames, and whether no other stream was open.
+fun open-stream( c : h2conn, ch : channel<()>, block : bytes, end-stream : bool, streaming : bool, round : int ) : <async,exn,ndet> (int, bytes, bool)
+  val now = now-ms()
+  val res = async-ioc
+    val st = get-state(c.state)
+    if st.c-closed then Left(if st.c-error.is-empty then "http2: the connection is closing" else st.c-error)
+    elif st.c-streams.length >= st.c-max-streams then
+      set-state(c, st(c-waiters = Cons(ch, st.c-waiters)))
+      Right(Nothing)
+    else
+      val sid = st.c-next-sid
+      val s = H2stream(sid, ch, [], False, [], False, -1, st.c-init-window, streaming)
+      set-state(c, st(c-next-sid = sid + 2, c-streams = st.c-streams ++ [s], c-last-used = now))
+      Right(Just((sid, header-frames(sid, block, end-stream, st.c-max-frame), st.c-streams.is-empty)))
+  match res
+    Left(msg) -> throw(msg)
+    Right(Just(x)) -> x
+    Right(Nothing) ->
+      c.wait-for(ch)
+      c.open-stream(ch, block, end-stream, streaming, pretend-decreasing(round + 1))
+
+// Forget a client stream; reset it if it is still open.
+fun close-stream( c : h2conn, sid : int ) : async ()
+  val unfinished = async-ioc
+    val st = get-state(c.state)
+    val s = st.find-stream(sid)
+    set-state(c, notify-all(st(c-streams = st.c-streams.filter(fn(x) x.s-sid != sid))))
+    match s
+      Just(x) -> !x.s-done && x.s-reset < 0 && !st.c-closed
+      Nothing -> False
+  if unfinished then catch(fn(_) (), { c.send(rst-stream(sid, err-cancel)) })
+
+// Was a request that failed with an exception never processed by the server?
+// A server closes an idle connection only when it has no streams, so a
+// request that was alone on the connection and got no answer was not
+// processed: it can be retried, as for a refused stream. (The GOAWAY is not
+// always seen: on Windows a reset discards the data not yet read.)
+fun unprocessed( c : h2conn, sid : int, alone : bool ) : async bool
+  alone && async-ioc
+    match get-state(c.state).find-stream(sid)
+      Just(x) -> !x.s-has-headers && x.s-reset < 0
+      Nothing -> False
+
+fun response-status( hs : h2-headers ) : exn int
+  match hs.lookup(fn(n) n == ":status").map(fn(t) parse-int(t))
+    Just(Just(n)) -> n
+    _ -> throw("http2: response without a valid :status")
+
+// Send a request and give `action` the response status, headers, and body as
+// a stream, read as `action` consumes it (the stream's flow control window is
+// given back as it is read, so a slow reader slows the server down). The
+// request body is `body`, or the parts of `upload`, sent while the response
+// is read. The body stream can only be used during `action`; when `action`
+// returns before the end of the body, the stream is reset. Returns `Nothing`
+// if the server refused the request without processing it.
+pub fun h2-stream-request( c : h2conn, method : string, scheme : string, authority : string, path : string,
+                           headers : list<(string, string)>, body : bytes, upload : maybe<seq<<async,exn,ndet|e>,bytes>>,
+                           action : (int, h2-headers, seq<<async,exn,ndet|e>,bytes>) -> <async,exn,ndet,div|e> a ) : <async,exn,ndet,div|e> maybe<a>
+  val ch = channel()
+  val hs = [(":method", method), (":scheme", scheme), (":authority", authority), (":path", path)] ++ headers.h2-filter-headers
+  val end-stream = body.is-empty && upload.is-nothing
+  val (sid, frames, alone) = c.open-stream(ch, hpack-encode(hs), end-stream, True, 0)
+  with finally { c.close-stream(sid) }
+  fun send-parts( parts : seq<_,bytes> )
+    if c.answered-early(sid) then ()
+    else match parts.uncons
+      Just((part, rest)) ->
+        if !part.is-empty then c.send-body(sid, ch, part, False)
+        send-parts(rest)
+      Nothing -> c.send(frame-bytes(frame-data, flag-end-stream, sid, bytes/empty))
+  fun send-all()
+    match upload
+      Just(up) -> send-parts(up)
+      Nothing -> if !body.is-empty then c.send-body(sid, ch, body, True)
+  fun receive()
+    match c.await-headers(sid, ch)
+      Just((status, rhs)) -> Just(action(status, rhs, c.stream-body(sid, ch)))
+      Nothing -> Nothing
+  val sent = catch(fn(_) False, { c.send(frames); True })
+  if !sent then
+    c.fail("http2: the connection was closed")
+    Nothing
+  else
+    // the response is read while the body is sent (see `h2-request`)
+    val res = mask<exn>{ catch(fn(err) Error(err), { if end-stream then Ok(receive()) else Ok(interleaved(send-all, receive).snd) }) }
+    match res
+      Ok(r) -> r
+      Error(err) ->
+        if c.unprocessed(sid, alone) then
+          c.fail("http2: the connection was closed: " ++ err.message)
+          Nothing
+        else throw-exn(err)
+
+// Wait for the response headers on a stream: `Nothing` if the server refused the stream.
+fun await-headers( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet> maybe<(int, h2-headers)>
+  val (s, err) = async-ioc
+    val st = get-state(c.state)
+    (st.find-stream(sid), st.c-error)
+  match s
+    Just(x) | x.s-reset == err-refused-stream -> Nothing
+    Just(x) | x.s-has-headers ->
+      Just((x.s-headers.response-status, x.s-headers.filter(fn((n, _)) !n.starts-with(":").is-just)))
+    Just(x) | x.s-reset >= 0 -> throw("http2: stream reset by the server (error " ++ x.s-reset.show ++ ")")
+    Just(_) | err.is-empty ->
+      c.wait-for(ch)
+      c.await-headers(sid, pretend-decreasing(ch))
+    _ -> throw(if err.is-empty then "http2: the stream was closed" else err)
 
 // Wait for the complete response on a stream.
 fun await-response( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet> maybe<(int, h2-headers, bytes)>
@@ -658,10 +731,7 @@ fun await-response( c : h2conn, sid : int, ch : channel<()> ) : <async,exn,ndet>
       Just(x) | x.s-reset >= 0 && !(x.s-reset == err-no-error && x.s-has-headers && x.s-done) ->
         throw("http2: stream reset by the server (error " ++ x.s-reset.show ++ ")")
       Just(x) | x.s-has-headers && x.s-done ->
-        val status = match x.s-headers.lookup(fn(n) n == ":status").map(fn(t) parse-int(t))
-          Just(Just(n)) -> n
-          _ -> throw("http2: response without a valid :status")
-        Just((status, x.s-headers.filter(fn((n, _)) !n.starts-with(":").is-just), x.s-body.reverse.join))
+        Just((x.s-headers.response-status, x.s-headers.filter(fn((n, _)) !n.starts-with(":").is-just), x.s-body.reverse.join))
       Just(_) | err.is-empty ->
         c.wait-for(ch)
         go(pretend-decreasing(round + 1))
@@ -751,7 +821,7 @@ fun respond( c : h2conn, sid : int, on-request : h2-handler<e> ) : <async,exn,nd
         // the client is still sending a body that was not read: stop it (RFC 9113 section 8.1)
         if unfinished then catch(fn(_) (), { c.send(rst-stream(sid, err-no-error)) })
       if req.s-reset >= 0 then return ()
-      val body-in = c.request-body(sid, req.s-ch)
+      val body-in = c.stream-body(sid, req.s-ch)
       val (status, hs, body) = mask<exn>{ catch(fn(e) (500, [("content-type", "text/plain; charset=utf-8")], H2-bytes(("internal server error: " ++ e.message).bytes)),
                                                 { on-request(req.s-headers, body-in) }) }
       val method = req.s-headers.lookup(fn(n) n == ":method").default("")
@@ -768,10 +838,11 @@ fun respond( c : h2conn, sid : int, on-request : h2-handler<e> ) : <async,exn,nd
           if ok then c.send(frame-bytes(frame-data, flag-end-stream, sid, bytes/empty))
           else catch(fn(_) (), { c.send(rst-stream(sid, err-internal)) })
 
-// The body of a request as a stream: the data received on stream `sid` so
-// far, and then the data as it arrives. The stream's flow control window is
-// given back as the data is read.
-fun request-body( c : h2conn, sid : int, ch : channel<()> ) : seq<<async,exn,ndet|e>,bytes>
+// The body of a request (on a server) or a response (on a client streaming
+// it) as a stream: the data received on stream `sid` so far, and then the
+// data as it arrives. The stream's flow control window is given back as the
+// data is read.
+fun stream-body( c : h2conn, sid : int, ch : channel<()> ) : seq<<async,exn,ndet|e>,bytes>
   seq/suspend fn()
     val (found, data, done, reset) = async-ioc
       val st = get-state(c.state)
@@ -781,13 +852,13 @@ fun request-body( c : h2conn, sid : int, ch : channel<()> ) : seq<<async,exn,nde
           (True, x.s-body.reverse.join, x.s-done, x.s-reset)
         Nothing -> (False, bytes/empty, False, -1)
     if !found then throw("http2: the stream was closed")
-    elif reset >= 0 then throw("http2: stream reset by the peer (error " ++ reset.show ++ ")")
+    elif reset >= 0 && !(reset == err-no-error && done) then throw("http2: stream reset by the peer (error " ++ reset.show ++ ")")
     elif !data.is-empty then
       if !done then c.send(window-update(sid, data.length))
-      Yield(data, c.request-body(pretend-decreasing(sid), ch))
+      Yield(data, c.stream-body(pretend-decreasing(sid), ch))
     elif done then Done
     else
       val err = async-ioc { get-state(c.state).c-error }
       if !err.is-empty then throw(err)
-      ch.receive
-      c.request-body(pretend-decreasing(sid), ch).next
+      c.wait-for(ch)
+      c.stream-body(pretend-decreasing(sid), ch).next

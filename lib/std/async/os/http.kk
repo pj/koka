@@ -620,7 +620,14 @@ fun write-streamed( s : net-stream, start-line : string, hs : headers, upload : 
 // `body`, or `upload` (a stream, sent with chunked transfer encoding). Bodies
 // encoded with gzip or deflate are decoded, unless `headers` contain an
 // `Accept-Encoding`. Redirects are followed as in `http-request` (but not
-// for an `upload`, which cannot be sent twice). HTTP/1.1 is used.
+// for an `upload`, which cannot be sent twice).
+//
+// With `http2` (the default), `https` connections offer HTTP/2 (with ALPN),
+// and with `h2c` plain `http` uses HTTP/2 directly ("prior knowledge"). Over
+// HTTP/2 the server is only sent more of the body as `action` reads it (flow
+// control), and an `upload` is sent while the response is read, so a server
+// can answer as it reads the upload (as in an echo); over HTTP/1.1 the upload
+// is sent first.
 //
 // ```
 // http-stream("GET", "https://example.com/big.log") fn(res, body)
@@ -628,13 +635,19 @@ fun write-streamed( s : net-stream, start-line : string, hs : headers, upload : 
 // ```
 pub fun http-stream( method : string, url : string, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a,
                      headers : headers = [], body : bytes = bytes/empty, upload : maybe<byte-stream<<async,exn,net,ndet|e>>> = Nothing,
-                     max-redirects : int = 10, tls-ca : string = "", tls-cert : string = "", tls-key : string = "", tls-crl : string = "", tls-ocsp : bool = False ) : <async,exn,net,ndet,div|e> a
+                     max-redirects : int = 10, tls-ca : string = "", tls-cert : string = "", tls-key : string = "", tls-crl : string = "", tls-ocsp : bool = False,
+                     http2 : bool = True, h2c : bool = False ) : <async,exn,net,ndet,div|e> a
   val u = match parse-url(url)
     Just(u) -> u
     Nothing -> throw("http: invalid url " ++ url.show)
   val decode = headers.header("Accept-Encoding").is-nothing
   val hs = if decode then headers ++ [("Accept-Encoding", "gzip, deflate")] else headers
-  stream-url(method, u, hs, body, upload, if upload.is-just then 0 else max-redirects, Tls-opts(tls-ca, tls-cert, tls-key, tls-crl, tls-ocsp), decode, action)
+  stream-url(method, u, hs, body, upload, if upload.is-just then 0 else max-redirects, Tls-opts(tls-ca, tls-cert, tls-key, tls-crl, tls-ocsp), Stream-opts(decode, http2, h2c), action)
+
+value struct stream-opts
+  decode : bool   // decode gzip and deflate bodies
+  http2 : bool    // offer HTTP/2 on https
+  h2c : bool      // HTTP/2 with prior knowledge on http
 
 // Either a redirect to follow, or the result of the action.
 type stream-outcome<a>
@@ -642,13 +655,13 @@ type stream-outcome<a>
   Finished( result : a )
 
 fun stream-url( method : string, u : url, headers : headers, body : bytes, upload : maybe<byte-stream<<async,exn,net,ndet|e>>>, redirects-left : int,
-                tls : tls-opts, decode : bool, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a ) : <async,exn,net,ndet,div|e> a
-  match stream-once(method, u, headers, body, upload, redirects-left, tls, decode, action)
-    Follow(m, next, hs, b) -> stream-url(m, next, hs, b, Nothing, pretend-decreasing(redirects-left - 1), tls, decode, action)
+                tls : tls-opts, opts : stream-opts, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a ) : <async,exn,net,ndet,div|e> a
+  match stream-once(method, u, headers, body, upload, redirects-left, tls, opts, action)
+    Follow(m, next, hs, b) -> stream-url(m, next, hs, b, Nothing, pretend-decreasing(redirects-left - 1), tls, opts, action)
     Finished(x) -> x
 
 fun stream-once( method : string, u : url, headers : headers, body : bytes, upload : maybe<byte-stream<<async,exn,net,ndet|e>>>, redirects-left : int,
-                 tls : tls-opts, decode : bool, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a ) : <async,exn,net,ndet,div|e> stream-outcome<a>
+                 tls : tls-opts, opts : stream-opts, action : (http-response, byte-stream<<async,exn,net,ndet|e>>) -> <async,exn,net,ndet,div|e> a ) : <async,exn,net,ndet,div|e> stream-outcome<a>
   if u.scheme != "http" && u.scheme != "https" then throw("http: unsupported url scheme " ++ u.scheme.show)
   val conn-port = u.effective-port.default(80)
   val target = (if u.path.is-empty then "/" else u.path) ++ (if u.has-query then "?" ++ u.query else "")
@@ -656,40 +669,54 @@ fun stream-once( method : string, u : url, headers : headers, body : bytes, uplo
   val hs0 = headers.set-header("Host", host-header).set-header("Connection", "close")
   val hs = if hs0.header("User-Agent").is-just then hs0 else hs0.set-header("User-Agent", "koka-http")
   val start-line = method ++ " " ++ target ++ " HTTP/1.1"
-  val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, crl = tls.crl, ocsp = tls.ocsp)
+  val s = if u.scheme == "https" then tls-connect(u.host, conn-port, ca = tls.ca, cert = tls.cert, key = tls.key, crl = tls.crl, ocsp = tls.ocsp,
+                                                  alpn = if opts.http2 then ["h2", "http/1.1"] else [])
           else plain-stream(tcp-connect(u.host, conn-port))
   with finally { s.close }
-  val sent = match upload
-    Just(up) ->   // (errors of the upload stream itself are raised)
-      write-streamed(s, start-line, hs, up)
-      Nothing
-    Nothing -> catch(fn(e) Just(e), { write-message(s, start-line, hs, body); Nothing })
-  // if sending failed, the server may still have answered
-  val (status, reason, rhs, r) = match sent
-    Nothing -> read-head(Reader(s, bytes/empty))
-    Just(err) -> match catch(fn(_) Nothing, { Just(read-head(Reader(s, bytes/empty))) })
-      Just(head) -> head
-      Nothing -> throw-exn(err)
-  val is-redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
-  match rhs.header("Location")
-    Just(location) | is-redirect && redirects-left > 0 ->
-      val next = u.resolve(location.trim)
-      val to-get = status == 303 && method != "HEAD" || (status == 301 || status == 302) && method == "POST"
-      val (m, b, hs1) = if to-get then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
-                        else (method, body, headers)
-      val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
-      Follow(m, next, hs2, b)
-    _ | is-redirect && rhs.header("Location").is-just && redirects-left <= 0 && upload.is-nothing ->
-      throw("http: too many redirects (the last one was to " ++ rhs.header("Location").default("").show ++ ")")
-    _ ->
-      val no-body = method == "HEAD" || status == 204 || status == 304
-      val raw-stream = if no-body then seq/empty() else body-stream(r, rhs)
-      val codings = rhs.header("Content-Encoding").default("").split(",").map(fn(c) c.trim.to-lower).filter(fn(c) !c.is-empty && c != "identity")
-      val known = !codings.is-nil && codings.all(fn(c) c == "gzip" || c == "x-gzip" || c == "deflate")
-      val (stream, hs-out) = if decode && known then
-          (codings.foldl(raw-stream, fn(st, _) st.decompress(Auto)), rhs.remove-headers(["Content-Encoding", "Content-Length"]))
-        else (raw-stream, rhs)
-      Finished(action(Http-response(status, reason, hs-out, bytes/empty, "HTTP/1.1"), stream))
+  // a redirect to follow, or the result of `action` on the response
+  fun outcome( status : int, reason : string, rhs : headers, open-body : () -> _ byte-stream<_>, version : string )
+    val is-redirect = status == 301 || status == 302 || status == 303 || status == 307 || status == 308
+    match rhs.header("Location")
+      Just(location) | is-redirect && redirects-left > 0 ->
+        val next = u.resolve(location.trim)
+        val to-get = status == 303 && method != "HEAD" || (status == 301 || status == 302) && method == "POST"
+        val (m, b, hs1) = if to-get then ("GET", bytes/empty, headers.remove-headers(["Content-Type", "Content-Length", "Transfer-Encoding"]))
+                          else (method, body, headers)
+        val hs2 = if same-origin(u, next) then hs1 else hs1.remove-headers(["Authorization", "Cookie"])
+        Follow(m, next, hs2, b)
+      _ | is-redirect && rhs.header("Location").is-just && redirects-left <= 0 && upload.is-nothing ->
+        throw("http: too many redirects (the last one was to " ++ rhs.header("Location").default("").show ++ ")")
+      _ ->
+        val no-body = method == "HEAD" || status == 204 || status == 304
+        val raw-stream = if no-body then seq/empty() else open-body()
+        val codings = rhs.header("Content-Encoding").default("").split(",").map(fn(c) c.trim.to-lower).filter(fn(c) !c.is-empty && c != "identity")
+        val known = !codings.is-nil && codings.all(fn(c) c == "gzip" || c == "x-gzip" || c == "deflate")
+        val (stream, hs-out) = if opts.decode && known then
+            (codings.foldl(raw-stream, fn(st, _) st.decompress(Auto)), rhs.remove-headers(["Content-Encoding", "Content-Length"]))
+          else (raw-stream, rhs)
+        Finished(action(Http-response(status, reason, hs-out, bytes/empty, version), stream))
+  val is-h2 = if u.scheme == "https" then s.alpn-protocol == Just("h2") else opts.h2c
+  if is-h2 then
+    val h = h2-connect(s)
+    with finally { h.h2-close }
+    val res = h.h2-stream-request(method, u.scheme, host-header, target, hs, body, upload) fn(status, rhs, bs)
+      outcome(status, reason-phrase(status), rhs, fn() bs, "HTTP/2")
+    match res
+      Just(x) -> x
+      Nothing -> throw("http: the server refused the request")
+  else
+    val sent = match upload
+      Just(up) ->   // (errors of the upload stream itself are raised)
+        write-streamed(s, start-line, hs, up)
+        Nothing
+      Nothing -> catch(fn(e) Just(e), { write-message(s, start-line, hs, body); Nothing })
+    // if sending failed, the server may still have answered
+    val (status, reason, rhs, r) = match sent
+      Nothing -> read-head(Reader(s, bytes/empty))
+      Just(err) -> match catch(fn(_) Nothing, { Just(read-head(Reader(s, bytes/empty))) })
+        Just(head) -> head
+        Nothing -> throw-exn(err)
+    outcome(status, reason, rhs, fn() body-stream(r, rhs), "HTTP/1.1")
 
 // Read the status line and headers (skipping informational responses).
 fun read-head( r : reader ) : <async,exn> (int, string, headers, reader)
