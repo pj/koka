@@ -57,6 +57,7 @@ pub import std/data/heap
 pub import std/data/json
 pub import std/data/toml
 pub import std/data/xml
+pub import std/data/xml/dtd
 pub import std/data/der
 pub import std/data/bitset
 pub import std/data/array

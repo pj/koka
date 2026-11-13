@@ -1,0 +1,25 @@
+Just(("catalog","",True))
+Just(("html","-//W3C//DTD XHTML 1.0 Strict//EN","http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd"))
+["catalog: (title, (book | magazine)*, note?)","title: mixed []","book: (author+, price)","magazine: EMPTY","author: mixed [\"em\"]","em: mixed []","price: mixed []","note: ANY"]
+["book@id","book@lang","book@status","book@related","magazine@issue","catalog@version"]
+[]
+[(Just("de"),Just("ok")),(Just("en"),Just("ok"))]
+Just("2")
+["<catalog>: the children <book> do not match (title, (book | magazine)*, note?)"]
+["<book>: the children <price> do not match (author+, price)"]
+["<catalog>: the children <title> <dvd> do not match (title, (book | magazine)*, note?)","element <dvd> is not declared"]
+["<book>: the required attribute id is missing"]
+["<book>: the attribute lang=\"es\" is not one of en|de|fr"]
+["<book>: the attribute status=\"bad\" must be \"ok\""]
+["the ID \"a\" is used more than once"]
+["<book>: the attribute related=\"a zz\" refers to the ID \"zz\", which does not exist"]
+["<magazine>: the element must be empty","<magazine>: the attribute issue=\"4 2\" is not a name token"]
+["<catalog>: text is not allowed here","<title>: <em> is not allowed here"]
+["<book>: the attribute color is not declared"]
+["the root element is <title>, but the DOCTYPE names <catalog>"]
+xml: the document is not valid: <catalog>: the children <title> <dvd> do not match (title, (book | magazine)*, note?); element <dvd> is not declared
+xml: the document has no DOCTYPE to validate against
+hi
+dtd: expected ',', '|' or ')' in a content model at "| d )"
+dtd: undeclared parameter entity %undeclared; near "%undeclared;"
+dtd: expected an attribute type at "BOGUS #IMPLIED"

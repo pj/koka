@@ -23,7 +23,9 @@
    `parse-xml` builds the tree. Both check that the document is well formed
    (matching tags, one root element, unique attributes, and only the
    predefined entities `&lt; &gt; &amp; &quot; &apos;` and character
-   references). A DOCTYPE is skipped; its entity definitions are not used.
+   references). The internal entity declarations of a DOCTYPE are used;
+   `parse-doctype` gives the DOCTYPE itself, and `std/data/xml/dtd` validates
+   a document against its DTD.
    Namespaces are not interpreted: a name like `atom:link` is kept as it is.
 */
 module std/data/xml
@@ -452,6 +454,54 @@ fun next-event( src : list<char>, st : pstate ) : <exn,div> maybe<(xml-event, ps
             val st1 = st(rest = value.list ++ after ++ rest, expanded = total)
             if before.is-empty then next-event(src, pretend-decreasing(st1))
             else Just((Text-event(src.unescape(cs, before.string, st.entities)), st1))
+
+// ----------------------------------------------------------------------------
+// The DOCTYPE
+// ----------------------------------------------------------------------------
+
+// A document type declaration `<!DOCTYPE name PUBLIC "pub" "sys" [ subset ]>`.
+pub struct doctype
+  name : string              // the name of the root element
+  public-id : string         // `""` if there is none
+  system-id : string         // the URI of the external DTD; `""` if there is none
+  internal-subset : string   // the declarations between `[` and `]`
+
+// The DOCTYPE of a document, if it has one (see `std/data/xml/dtd` for validation).
+pub fun parse-doctype( s : string ) : exn maybe<doctype>
+  val src = s.list
+  fun find( cs : list<char> ) : exn maybe<doctype>
+    val c1 = cs.skip-ws
+    if c1.starts("<!--") then find(pretend-decreasing(c1.drop(4).skip-past("-->")))
+    elif c1.starts("<?") then find(pretend-decreasing(c1.drop(2).skip-past("?>")))
+    elif c1.starts("<!DOCTYPE") then
+      val body = c1.drop(9)
+      val after = src.skip-doctype(body)
+      val decl = body.take(body.length - after.length - 1)   // without the final '>'
+      val (name, rest) = src.parse-name(decl.skip-ws)
+      val r1 = rest.skip-ws
+      val (pubid, sysid, r2) =
+        if r1.starts("SYSTEM") then
+          val (sys, r) = src.literal(r1.drop(6).skip-ws)
+          ("", sys, r)
+        elif r1.starts("PUBLIC") then
+          val (pubtext, r) = src.literal(r1.drop(6).skip-ws)
+          val (sys, r') = src.literal(r.skip-ws)
+          (pubtext, sys, r')
+        else ("", "", r1)
+      val subset = match r2.skip-ws
+        Cons('[', inner) -> match inner.reverse.skip-ws
+          Cons(']', before) -> before.reverse.string
+          _ -> src.parse-error(cs, "expected ']' at the end of the internal subset")
+        Nil -> ""
+        _ -> src.parse-error(cs, "unexpected text in the DOCTYPE")
+      Just(Doctype(name, pubid, sysid, subset))
+    else Nothing
+  find(src.skip-prolog)
+
+fun literal( src : list<char>, cs : list<char> ) : exn (string, list<char>)
+  match cs
+    Cons(q, rest) | q == '"' || q == '\'' -> src.until(rest, q.string, "literal")
+    _ -> src.parse-error(cs, "expected a quoted literal")
 
 // ----------------------------------------------------------------------------
 // Building the tree

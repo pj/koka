@@ -435,9 +435,14 @@ tryTailCall result expr
                                     bs    <- mapM genVarBinding args'
                                     return (unzip bs)
            -- an argument that is itself one of the parameters (in another position, as in
-           -- `f(b,a)` or `f(i+1,i)`) must be read before the parameters are overwritten
+           -- `f(b,a)` or `f(i+1,i)`) must be read before the parameters are overwritten.
+           -- So must a pattern variable, which is generated as an expression over a
+           -- parameter: in `match xs { Cons(c,rest) -> f(rest,c) }` the argument `c` is
+           -- `xs.head`, which must be read before `xs = xs.tail`. So when more than one
+           -- parameter changes, all changed arguments are copied first.
+           let changed = length (filter (\(p,v) -> v /= p) (zip params varNames0))
            (copies, varNames) <- fmap unzip $ mapM (\(p,v) ->
-                                    if (v /= p && v `elem` params)
+                                    if (v /= p && (changed > 1 || v `elem` params))
                                       then do name <- newVarName "x"
                                               vdoc <- genTName v
                                               return (text "var" <+> ppName name <+> text "=" <+> vdoc <.> semi, TName name (typeOf v))
