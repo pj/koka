@@ -348,7 +348,7 @@ backends and diffs the output against its `.out` file.
 | 23b | `std/async/os/udp` | ✅ UDP on libuv (C) and `dgram` (JS): `udp-bind`, `send-to` (IP or host name), `receive-from` with the sender address, `set-broadcast`, `local-address`; multicast (`join-multicast`/`leave-multicast` with an optional interface, `set-multicast-ttl`, `set-multicast-loop`, `set-multicast-interface`); connected sockets (`connect`, `send`, `disconnect`, `remote-address`; only the peer's datagrams arrive); cancellable |
 | 24 | `std/async/os/tls` | ✅ TLS client: `tls-connect` with certificate and host name verification (system CA bundle, `SSL_CERT_FILE`, or an explicit `ca`); TLS server: `tls-server-config` (PEM certificate chain and key) and `tls-accept` on accepted connections; client certificates (`cert`/`key` on the client, `client-ca` and `client-cert-required` on the server, `peer-certificate`); ALPN (`alpn`, `alpn-protocol`); mbedtls as an in-memory engine on C, `node:tls` on JS; `net-stream` unifies plain and TLS connections; SNI: the server picks a certificate by the requested name (`sni` with names and `*.domain` patterns), and the client can ask for a `server-name` other than the host it connects to; certificate revocation lists (`crl` on the client, `client-crl` on the server, `tls-crl` for HTTP); OCSP (`std/async/os/ocsp`: `ocsp-request`, `ocsp-status` checks a response's signature by the issuer or a delegated responder with the `OCSPSigning` usage, the CertID, the nonce and the `thisUpdate`/`nextUpdate` window, and `ocsp-check` asks the responder named in the certificate; `tls-connect(..., ocsp = True)` and `tls-ocsp` for HTTP reject revoked or unknown server certificates; the request is byte-identical to `openssl ocsp`'s, and responses from `openssl ocsp` are checked on C and JS); `peer-chain` gives the certificates the peer presented; `std/crypto/x509` parses certificates (serial, names, key, validity, extensions, AIA OCSP URLs, extended key usage) and verifies RSA and ECDSA signatures (mbedtls on C, Node `crypto` on JS, which also does Ed25519); `std/data/der` encodes and decodes ASN.1 DER and PEM · ❌ OCSP stapling (mbedtls does not support it) |
 | 25 | `std/async/os/http` | ✅ HTTP/1.1 and HTTP/2 client and server for `http` and `https` (`http-get`/`post`/`request`, `http-serve` with keep-alive and an optional TLS config); Content-Length, chunked and read-to-close bodies; the client follows redirects (`max-redirects`, browser-style method rewriting, credentials dropped across origins) and accepts a custom CA and a client certificate (`tls-ca`, `tls-cert`, `tls-key`); `http-client` reuses keep-alive connections (per-host idle pool with an idle timeout that also respects the server's `Keep-Alive: timeout`, idempotent requests retried once on a stale connection); the server reports the client address (`peer`) and certificate (`client-cert`) and honours `Connection: close` from a handler, and closes connections that stay idle (`idle-timeout`, announced in `Keep-Alive`) or send a request too slowly (`request-timeout`, answered with 408); HTTP/2 (`std/async/os/http2`) with ALPN on `https` and with prior knowledge (`h2c`) on `http`: multiplexing, flow control, `version` on requests and responses; the client shares one connection per origin (also between concurrent first requests) and retries requests refused by a closing server; interoperates with curl/nghttp2, Node.js, Google, Cloudflare and GitHub; compression: the client asks for gzip/deflate and decodes the body unless the caller sets `Accept-Encoding` (also zlib-or-raw "deflate" and stacked encodings), the server compresses text responses for clients that accept gzip with `http-serve(..., compress = True)` or `gzip-response` (with `Vary`, honouring `q=0`); streaming bodies: `http-stream` gives the response body as a byte stream read while it is consumed (Content-Length, chunked or to the end, gzip/deflate decoded) and can upload a stream (chunked), and `stream-response` sends a body as it is produced (chunked over HTTP/1.1; collected for HTTP/2 and HTTP/1.0); `http-serve-stream` gives handlers the request body as a byte stream read from the connection (Content-Length or chunked; the connection is kept alive when the body was read to the end, also by the response's body writer as in an echo, and otherwise closed after reading and discarding up to 4 MiB or 2 s of what the client still sends, so it is not reset before it reads the response; the HTTP/1.1 client in turn reads the response when sending the body fails, since a server may answer early and close), and both servers answer `Expect: 100-continue` (the streaming one only when the body is read); over HTTP/2 the server hands a request to its handler when the headers arrive, streams the body from the DATA frames (giving the stream's flow-control window back as the handler reads, so a slow handler slows the client down), sends `body-writer` output as DATA frames as it is produced, and resets a stream whose body was not read with `NO_ERROR` after the response, which the client accepts as a complete response (it stops uploading); `http-stream` uses HTTP/2 too (offered with ALPN on `https`, `h2c = True` for prior knowledge on `http`): the response body is read from the DATA frames as the action consumes it, giving the stream window back as it reads (so a slow consumer slows the server down; 4 MiB through the 1 MiB windows), an `upload` is sent while the response is read (an 8 MiB full-duplex echo works, which HTTP/1.1 cannot do since it sends the upload first), stopping early resets the stream, redirects and gzip decoding work as over HTTP/1.1 (`test/net/http2-stream`; checked against Google, Cloudflare and GitHub on C and JS); `h2-stream-request` in `std/async/os/http2` is the underlying API · ❌ HTTP/3; deliberately not: server push (removed from browsers, deprecated in practice) and the `Upgrade: h2c` mechanism (deprecated by RFC 9113) |
-| 26 | `std/io/stream` | ✅ `byte-stream<e>`: a lazy `seq<e,bytes>` of chunks, pull-based and pure Koka (no mutable state). Sources `bytes/stream`, `string/stream`, `from-reader`; lazy `lines` (`\n` and `\r\n`), `split-bytes`, `decode-utf8` (characters split over chunks), `encode-utf8`, `unlines`, `rechunk`, `take-bytes`, `drop-bytes`; `read-all`, `read-text`, `byte-count`, `pipe`; incremental `read-line`, `read-until` (with `max-len`), `read-bytes`, which return the rest of the stream. Connected to sync file handles (`std/os/fs`), stdin (`std/os/io`), TCP sockets, TLS connections, child process output and async files. Constant memory: 300 MB of lines in 1.7 s with 3.4 MB resident; compression transformers live in `std/compress` (`s.gunzip`, `s.decompress(Auto)`, `s.gzip`, also brotli and zstd) · ❌ write buffering beyond `rechunk`; `std/async/os/http` keeps its own reader |
+| 26 | `std/io/stream` | ✅ `byte-stream<e>`: a lazy `seq<e,bytes>` of chunks, pull-based and pure Koka (no mutable state). Sources `bytes/stream`, `string/stream`, `from-reader`; lazy `lines` (`\n` and `\r\n`), `split-bytes`, `decode-utf8` (characters split over chunks), `encode-utf8`, `unlines`, `rechunk`, `take-bytes`, `drop-bytes`; `read-all`, `read-text`, `byte-count`, `pipe`; incremental `read-line`, `read-until` (with `max-len`), `read-bytes`, which return the rest of the stream. Connected to sync file handles (`std/os/fs`), stdin (`std/os/io`), TCP sockets, TLS connections, child process output and async files. Constant memory: 300 MB of lines in 1.7 s with 3.4 MB resident; compression transformers live in `std/compress` (`s.gunzip`, `s.decompress(Auto)`, `s.gzip`, also brotli and zstd); buffered writing: `buffered(write) { ... put-bytes(b) ... put-text(s) ... }` turns many small writes into writes of at least `size` bytes (64 KiB), with `flush-buffer`, for file handles, sockets or any `bytes -> ()` function · `std/async/os/http` keeps its own connection reader on purpose: the stream functions have `div`, which would reach the public signatures of `http-get` and friends, the reader also owns the socket that responses are written to, and keep-alive needs the bytes after a body back, which `take-bytes` and the like do not return |
 | 27 | `std/os/sync` | ✅ `spawn`/`join` run `<ndet,console,div>` functions on the `std/os/task` thread pool; `atomic` 64-bit integers (`load`, `store`, `add`, `fetch-add`, `exchange`, `compare-exchange`), `shared<a>` cells (`read`, `write`, atomic `update`), `mutex` with `with-lock`, `condition` variables (`wait`, `wait-for` with a timeout, `wait-until` a predicate, `notify`, `notify-all`; test: a bounded producer/consumer queue and waiters released together, C only), blocking `channel` (unbounded or with a `capacity`; `send` waits while it is full, `try-send`, `receive`, `try-receive`, `count`), `has-threads`; stored values are marked thread-shared. POSIX threads on C (checked: an unlocked read-modify-write loses updates, the locked one does not; the test passes 30 of 30 runs, also at `-O1`); `with-lock` releases the lock also on an exception; on JS everything runs sequentially and blocking on nothing raises a deadlock error; the `std/os/task` thread pool now uses work stealing (per-worker deques, newest-first locally, oldest-first stealing), 16 MiB worker stacks and a limit on nested helping, so deeply nested tasks work (1M tasks: 0.47 s; they used to crash with a stack overflow) |
 | 28 | `std/data/csv` | ✅ |
 | 29 | `std/data/toml` | ✅ TOML 1.0 `parse-toml` with line/column errors: all string forms (basic, literal, multi-line with line-ending backslash and extra quotes), integers (hex/octal/binary, underscores, arbitrary precision), floats (`inf`, `nan`), the four date/time kinds (validated, kept as RFC 3339 text), arrays, inline tables, dotted keys, `[tables]` and `[[arrays of tables]]` with the redefinition rules; accessors (`at`, `path`, `as-*`), `==`, `stringify` that parses back to the same document, conversion to JSON |
@@ -416,11 +416,34 @@ backends and diffs the output against its `.out` file.
   inside `async-ioc`, where `t` is a struct holding an `any`. Annotating the
   ref did not help. The workaround is a top-level helper with an explicit
   `<read<global>,div>` signature (`read-idle` in `std/async/os/http`).
+  Fixed here for the case that also hit `std/async/os/signal`: a top-level
+  **recursive** function reading a `ref` of functions (`r := Cons(f, !r)` in
+  a loop). Each definition of a recursive group is generalized in its own
+  constraint scope, so the `hdiv` constraints from the bodies were only
+  determined after the group's types were checked against the signatures,
+  and nothing resolved them; they are now resolved then (`Type/Infer.hs`,
+  `resolvePendingImplicitConstraints`).
 * **The `-O1` specializer can loop forever.** A lazy `filter` written as
   `Seq(fn() match s.skip-while(fn(x) !pred(x)) ... filter(rest, pred))` hangs
   the compiler (after type checking) at `-O1` for a call such as
   `range(1,5).filter(is-odd)`; it compiles instantly with `-O0`. Moving all
   recursion into one helper (`filter-step` in `std/core/seq`) avoids it.
+  Fixed here: since `filter` is effect-polymorphic, the code after the
+  `skip-while` call is lifted into a helper `@mlift-filter`, which calls
+  `filter` indirectly (`@open-none2(filter, rest, pred)`), so `specInnerCalls`
+  could not redirect it, and every specialized copy held a new `filter` call
+  to specialize. A function is now specialized at most 4 levels deep inside
+  its own specializations (nested specializations with different arguments
+  are useful, see `test/cgen/specialize/twostep-large2`).
+* **Mutually recursive functions were always considered divergent**, so they
+  needed `div` (or `pretend-no-div`) even when every call is on a smaller
+  argument, and `pretend-decreasing` did not help (`Core/Divergent.hs`: "for
+  mutual recursion, we assume it is divergent for now"). Fixed here: a group
+  terminates if each function has a parameter such that every call in the
+  group passes, in the callee's parameter, something smaller than the
+  caller's (a part of it from pattern matching, or a `pretend-decreasing`
+  argument). `tsum(Node(cs)) = forest-sum(cs)` with
+  `forest-sum(Cons(t,rest)) = tsum(t) + forest-sum(rest)` is total now.
 * **The specializer also looped on a recursive call inside a `var` scope.**
   In `fun fold(t, z, f) ... var acc := z; cs.foreach(fn(c) acc := fold(c, acc, f))`
   the recursive call passes `f` lifted into the `local` effect, as
@@ -596,8 +619,10 @@ backends and diffs the output against its `.out` file.
   silently killed unrelated strands, e.g. the `accept` of a server in the
   other branch of an enclosing `firstof`. A strand now cancels the scope of
   its own interleaving.
-  **Status (2026-11-11)**: the whole suite passes on Windows (498 tests;
-  `signal1` is excluded there), Linux x64 and Linux arm64. The runner also
+  **Status (2026-11-13)**: the whole suite passes on Windows, Linux x64 and
+  Linux arm64 (C), and now on JavaScript too (504 tests on C and 503 on JS
+  locally; `signal1`/`signal2` are skipped on Windows and `sync-condition`
+  on JS). The runner also
   pre-compiles `cgen/tail`, which `cgen/tail2` imports (both tests wrote its
   C files at the same time).
   The test runner now checks that pre-compiling the libraries worked (it
@@ -619,12 +644,33 @@ backends and diffs the output against its `.out` file.
 * **GNU ld needs static libraries in dependency order**: `std/crypto/x509`
   named `mbedcrypto` before the TLS module named `mbedtls`, which links on
   macOS but not on Linux; it now names all three in order.
-* `test/lazy/queue/physicists-stack` segfaults on JS on macOS: Node is run
-  with `--stack-size=100000` (~100 MB), but the main thread's stack is 8 MB,
-  so deep recursion crashes instead of raising `RangeError`. (Not fixed; the
-  float-formatting tests `ddouble1-3`, `double2`, `double4` and the C-only
-  `std/os/task` tests and `test/lib/sync-condition` also differ on JS, as
-  expected.)
+* **The JS test suite had 9 failures that were treated as expected.** All
+  fixed here, so JS passes the whole suite too:
+  * `test/lazy/queue/physicists-stack` segfaulted: Node was run with
+    `--stack-size=100000` (~100 MB) while the main thread has an 8 MB stack,
+    so deep recursion crashed instead of raising `RangeError`. On Unix, Node
+    now runs (through `sh`) with the soft stack limit raised to the hard limit
+    and `--stack-size` at 90% of it (`nodeWithStack` in `Compile/CodeGen.hs`;
+    64 MB on macOS is enough for this test).
+  * `float64` `show` differed between the backends. C used `%.17g`
+    (`0.1.show == "0.10000000000000001"`), and JS cut `toFixed` output to
+    17 decimals (`(0.1+0.2).show == "0.3"`, which is wrong). Both now show
+    the shortest digits that read back exactly (`"0.1"`,
+    `"0.30000000000000004"`), with at most `|precision|` digits after the
+    dot for a negative precision, as documented; `show-fixed` no longer
+    switches to exponent notation for numbers like `100` (C's `%g` did). JS
+    also lost the sign of `-0` with a positive precision.
+  * `abs(-inf)` was `-inf` on C (`kk_double_abs` only negated finite numbers),
+    so `decode(-inf)` treated it as subnormal.
+  * On JS, `count-digits` was one too small for every integer of 10^8 or
+    more, and `is-exp10` was always 0 for big integers (both assumed
+    `BigInt.toString()` ends in `n`). This made `decimal`, and so the `ddouble`
+    tests, show a digit more or less than on C.
+  * `std/os/task` had no JS implementation (`unsupported external:
+    unsafe_task`). On JS a task now runs when it is created, and lvars raise a
+    deadlock error for a `get` that cannot be satisfied, as `std/os/sync` does.
+  * `test/lib/sync-condition` needs threads; it is skipped on JS with the new
+    `exclude-target` setting of the test configuration files.
 * **Exponential code size for long boolean chains** (fixed in this fork). A
   function that is one `||` chain of `&&` clauses generated C code that doubled
   with every clause (10 clauses: 14 MB of C, 20 minutes in clang). The

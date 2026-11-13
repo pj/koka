@@ -172,6 +172,55 @@ fun slices( buf : bytes, ofs : int, s : byte-stream<e>, size : int ) : <div|e> s
   elif left == 0 then rechunk-step(s, [], 0, size)
   else rechunk-step(s, [buf.subbytes(ofs)], left, size)
 
+// ----------------------------------------------------------------------------
+// Buffered writing
+// ----------------------------------------------------------------------------
+
+// Writing through a buffer (see `buffered`).
+pub effect buffered-write
+  // Add bytes to the buffer (written out once enough have been collected).
+  fun put-bytes( b : bytes ) : ()
+  // Write out what the buffer holds now.
+  fun flush-buffer() : ()
+
+// Add text (as UTF-8) to the buffer.
+pub fun put-text( s : string ) : buffered-write ()
+  put-bytes(s.bytes)
+
+// Run `action`, collecting what it writes with `put-bytes` (or `put-text`)
+// and calling `write` only when at least `size` bytes are collected, and once
+// more at the end (or on `flush-buffer`). Many small writes then become a few
+// large ones, for example for a file handle or a socket, where every `write`
+// is a system call:
+//
+// ```
+// with-file("out.txt", Write) fn(h)
+//   buffered(fn(b) h.write(b)) { list(1, 100000).foreach(fn(i) put-text(i.show ++ "\n")) }
+// ```
+//
+// If `action` raises an exception, what it wrote after the last write is not
+// written out.
+pub fun buffered( write : bytes -> <div|e> (), action : () -> <buffered-write,div|e> a, size : int = 65536 ) : <div|e> a
+  var pend : list<bytes> := []     // in reverse
+  var plen := 0
+  fun flush-now()
+    if plen > 0 then
+      val b = pend.reverse.join
+      pend := []
+      plen := 0
+      write(b)
+  val h = handler
+    fun put-bytes(b)
+      if !b.is-empty then
+        pend := Cons(b, pend)
+        plen := plen + b.length
+        if plen >= size then flush-now()
+    fun flush-buffer()
+      flush-now()
+  val x = h(action)
+  flush-now()
+  x
+
 // The first `n` bytes of a stream.
 pub fun take-bytes( s : byte-stream<e>, n : int ) : byte-stream<e>
   seq/suspend fn()
