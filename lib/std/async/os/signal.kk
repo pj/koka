@@ -28,7 +28,16 @@
 
    While a strand waits for a signal, the signal does not have its default
    effect (such as terminating the process on `SIGINT`). Between two calls of
-   `wait-signal` it does.
+   `wait-signal` it does. To handle a signal every time it arrives, use
+   `with-signals`: for the whole scope, the signals are queued instead of
+   having their default effect, and `next` takes them one at a time:
+
+   ```
+   with-signals([SIGHUP, SIGTERM]) fn(sigs)
+     firstof({ serve() }, {
+       while { sigs.next != SIGTERM } { reload-config() }
+     })
+   ```
 
    On the C backend this uses libuv; on the JavaScript backend Node's
    `process` signal events. On Windows only `SIGINT`, `SIGTERM` and `SIGBREAK`
@@ -38,6 +47,7 @@ module async/os/signal
 
 import async/async
 import async/internal
+import async/channel
 import async/api/signal
   [host=libc|jsnode] async/api/uv/signal
 
@@ -112,6 +122,48 @@ fun arm( evloop : any, signals : list<signal>, resume : error<signal> -> ioc () 
       else
         disposers := oks
         Ok(fn() dispose-except(-1))
+
+// Signals that are handled for a while (see `with-signals`).
+abstract struct signal-handler
+  received : channel<signal>
+
+// Handle `signals` while `action` runs: every time one of them arrives it is
+// queued (it does not have its default effect, such as terminating the
+// process), and `next` returns the queued signals in order.
+pub fun with-signals( signals : list<signal>, action : signal-handler -> <async,exn|e> a ) : <async,exn|e> a
+  val ch : channel<signal> = channel()
+  val disposers : ref<global,list<() -> ioc ()>> = async-ioc { ref([]) }
+  with finally { async-ioc { dispose-all(disposers) } }
+  if signals.is-nil then throw("with-signals: no signals to handle")
+  do-sync(fn(evloop) watch-all(evloop, signals, ch, disposers), "with-signals")
+  action(Signal-handler(ch))
+
+// (a signature is needed: inferring the effect of reading the ref fails)
+fun get-disposers( r : ref<global,list<() -> ioc ()>> ) : <read<global>,div> list<() -> ioc ()>
+  !r
+
+fun dispose-all( disposers : ref<global,list<() -> ioc ()>> ) : ioc ()
+  val ds = get-disposers(disposers)
+  disposers := []
+  ds.foreach(fn(d) d())
+
+fun watch-all( evloop : any, signals : list<signal>, ch : channel<signal>, disposers : ref<global,list<() -> ioc ()>> ) : ioc error<()>
+  match signals
+    Nil -> Ok(())
+    Cons(sig, rest) ->
+      match signal-watch(evloop, sig.code, fn() emit-io(ch, sig))
+        Ok(d) ->
+          disposers := Cons(d, get-disposers(disposers))
+          watch-all(evloop, rest, ch, disposers)
+        Error(e) -> Error(e)
+
+// Wait for the next signal: the earliest queued one, or the next to arrive.
+pub fun next( h : signal-handler ) : <async,ndet> signal
+  h.received.receive
+
+// The earliest queued signal, if any (without waiting).
+pub fun try-next( h : signal-handler ) : <async,ndet> maybe<signal>
+  h.received.try-receive
 
 // Send a signal to the current process.
 pub fun raise-signal( sig : signal ) : <async,exn> ()

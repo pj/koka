@@ -21,6 +21,11 @@ pub extern signal-setup( evloop : any, code : int, cb : () -> ioc () ) : ioc err
   c  "kk_signal_setup"
   js "kk_signal_setup"
 
+// Call `cb` on every delivery of signal `code` until disposed.
+pub extern signal-watch( evloop : any, code : int, cb : () -> ioc () ) : ioc error<() -> ioc ()>
+  c  "kk_signal_watch"
+  js "kk_signal_watch"
+
 // Send signal `code` to the current process.
 pub extern signal-raise( code : int ) : ioc error<()>
   c  "kk_signal_raise"

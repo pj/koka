@@ -53,6 +53,29 @@ static kk_std_core_exn__error kk_signal_setup(kk_uv_loop_t loop, kk_integer_t co
   return kk_result_uv_handle_dispose((uv_handle_t*)s,NULL,&kk_uv_signal_dispose,ctx);
 }
 
+static void kk_uv_signal_call(kk_function_t cb, uv_handle_t* h, void* arg, kk_context_t* ctx) {
+  kk_unused(h); kk_unused(arg);
+  kk_function_call0(cb,ctx);  // drops the `cb` copy
+}
+
+static void kk_uv_signal_repeat_callback(uv_signal_t* s, int signum) {
+  kk_unused(signum);
+  kk_uv_handle_callback_repeat((uv_handle_t*)s, NULL, &kk_uv_signal_call);
+}
+
+static kk_std_core_exn__error kk_signal_watch(kk_uv_loop_t loop, kk_integer_t code, kk_function_t cb, kk_context_t* ctx) {
+  const int signum = kk_signal_from_code(kk_integer_clamp32(code,ctx));
+  if (signum < 0) { kk_function_drop(cb,ctx); return kk_error_from_uv_errno(UV_EINVAL,ctx); }
+  uv_signal_t* s;
+  int err = kk_uv_handle_create(sizeof(uv_signal_t), cb, (uv_handle_t**)&s, ctx);
+  if (err!=0) return kk_error_from_uv_errno(err,ctx);
+  err = uv_signal_init(kk_uv_loop(loop,ctx), s);
+  if (err!=0) { kk_uv_handle_free((uv_handle_t*)s,ctx); return kk_error_from_uv_errno(err,ctx); }
+  err = uv_signal_start(s, &kk_uv_signal_repeat_callback, signum);
+  if (err!=0) { kk_uv_handle_close((uv_handle_t*)s); return kk_error_from_uv_errno(err,ctx); }
+  return kk_result_uv_handle_dispose((uv_handle_t*)s,NULL,&kk_uv_signal_dispose,ctx);
+}
+
 static kk_std_core_exn__error kk_signal_raise(kk_integer_t code, kk_context_t* ctx) {
   const int signum = kk_signal_from_code(kk_integer_clamp32(code,ctx));
   if (signum < 0) return kk_error_from_uv_errno(UV_EINVAL,ctx);

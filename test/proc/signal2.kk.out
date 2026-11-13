@@ -1,0 +1,4 @@
+([SIGUSR1,SIGUSR2,SIGINT,SIGUSR1],Nothing)
+("reloads",3)
+SIGUSR2
+True

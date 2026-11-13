@@ -2,7 +2,8 @@
   "flags": "-e",
   "exclude-platform": {
     "windows": [
-      "signal1.kk"
+      "signal1.kk",
+      "signal2.kk"
     ]
   }
 }
