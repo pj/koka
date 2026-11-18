@@ -1,0 +1,15 @@
+koka wss: Just(Text("over tls"))
+ws protocol chat
+ws text hello
+ws binary 3
+ws text 100000 true
+ws binary 70000
+ws closed 4001  true
+wss protocol chat
+wss text hello
+wss binary 3
+wss text 100000 true
+wss binary 70000
+wss closed 4001  true
+bye text bye
+bye closed 1000 server done true

@@ -1,0 +1,22 @@
+protocol: superchat
+Just(Text("hello"))
+Just("[0,1,2,255]")
+True
+True
+Just(Text("after ping"))
+Nothing
+(Just(4000),Just("asked to"))
+websocket: the connection is closed
+Just(Text("protocol=\"\""))
+Just(Text("received 3"))
+client: closed, server answered Just(1001)
+("received while closing",2,Just(1000))
+(Nothing,Just(1011))
+websocket: the server answered "HTTP/1.1 404 Not Found" instead of switching protocols
+chosen: ""
+(426,"a WebSocket request is expected")
+[138,1,7,129,3,104,101,121,136,2,3,232]
+[136,2,3,239]
+[136,2,3,234]
+[136,2,3,234]
+(True,False,False)

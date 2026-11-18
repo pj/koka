@@ -89,11 +89,24 @@ pub struct http-response
   body : bytes = bytes/empty
   version : string = "HTTP/1.1"   // on the client: the protocol of the response (`"HTTP/1.1"` or `"HTTP/2"`)
   body-writer : maybe<body-writer> = Nothing   // on the server: produce the body in parts (see `stream-response`)
+  upgrade : maybe<upgrade-handler> = Nothing    // on the server: take over the connection after a `101` (see `upgrade-response`)
 
 // A function that produces a response body in parts: it calls `write` with
 // each part as it becomes available. (It may diverge, as when it copies a
 // stream.)
 pub alias body-writer = (write : bytes -> <async,exn> ()) -> <async,exn,ndet,div> ()
+
+// A function that takes over a connection after a `101 Switching Protocols`
+// response: it gets the connection and the bytes the client already sent
+// after its request. The connection is closed when it returns.
+pub alias upgrade-handler = (conn : net-stream, received : bytes) -> <async,exn,ndet,div> ()
+
+// A `101 Switching Protocols` response that switches the connection to
+// `protocol` (sent in the `Upgrade` header); then `on-upgrade` takes over the
+// connection (over HTTP/1.1; `std/async/os/websocket` builds on this). Over
+// HTTP/2 there is no upgrade, and the response becomes `501 Not Implemented`.
+pub fun upgrade-response( protocol : string, on-upgrade : upgrade-handler, headers : headers = [] ) : http-response
+  Http-response(101, reason-phrase(101), headers.set-header("Upgrade", protocol).set-header("Connection", "Upgrade"), upgrade = Just(on-upgrade))
 
 // A response whose body is produced in parts by `writer`, and sent as it is
 // produced (with chunked transfer encoding over HTTP/1.1, as DATA frames over
@@ -182,6 +195,7 @@ pub fun http-response/body-text( r : http-response ) : string
 pub fun reason-phrase( status : int ) : string
   match status
     100 -> "Continue"
+    101 -> "Switching Protocols"
     200 -> "OK"
     201 -> "Created"
     202 -> "Accepted"
@@ -201,6 +215,7 @@ pub fun reason-phrase( status : int ) : string
     409 -> "Conflict"
     413 -> "Content Too Large"
     415 -> "Unsupported Media Type"
+    426 -> "Upgrade Required"
     429 -> "Too Many Requests"
     500 -> "Internal Server Error"
     501 -> "Not Implemented"
@@ -1064,6 +1079,7 @@ fun h2-adapter( h : responder<e>, peer : string, client-cert : string ) : h2-han
       Buffered(f)  -> f(req(body = pretend-no-div { body-in.read-all }))
       Streaming(f) -> pretend-no-div { f(req, body-in) }
     match res.body-writer
+      _ | res.upgrade.is-just -> (501, [("content-type", "text/plain")], H2-bytes("protocol upgrades are not supported over HTTP/2".bytes))
       Just(w) -> (res.status, res.headers, H2-writer(w))
       Nothing -> (res.status, res.headers, H2-bytes(res.body))
 
@@ -1143,10 +1159,14 @@ fun serve-connection( r : reader, h : responder<e>, first : bool,
         // with a streamed body, the reader after the body is known once it was read to the end
         val ended : ref<global,maybe<reader>> = unsafe-total { ref(if buffered || !has-body(hs) then Just(r2) else Nothing) }
         val body = if buffered then seq/empty() else request-stream(r2, hs, expects-continue(version, hs), ended)
-        val res = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { h.call(req, body) }) }
+        val res0 = mask<exn>{ catch(fn(exn) text-response(500, "internal server error: " ++ exn.message), { h.call(req, body) }) }
+        // protocols can only be switched from HTTP/1.1
+        val res = if res0.status == 101 && version != "HTTP/1.1" then text-response(426, "upgrade requires HTTP/1.1") else res0
         fun body-done() : maybe<reader>
           unsafe-total { !ended }
+        val upgrading = res.status == 101 && res.upgrade.is-just && version == "HTTP/1.1"
         val keep-alive = match hs.header("Connection").map(to-lower)
+          _ | upgrading -> False
           _ | res.header("Connection").map(to-lower) == Just("close") -> False
           // an unread body that the response will not read either: close instead of reading it
           _ | body-done().is-nothing && res.body-writer.is-nothing -> False
@@ -1154,13 +1174,22 @@ fun serve-connection( r : reader, h : responder<e>, first : bool,
           Just("keep-alive") -> True
           _ -> version == "HTTP/1.1"
         val idle-secs = idle-timeout.milli-seconds / 1000
-        val hs1 = res.headers.set-header("Connection", if keep-alive then "keep-alive" else "close")
+        val hs1 = if upgrading then res.headers else res.headers.set-header("Connection", if keep-alive then "keep-alive" else "close")
         val res-headers = if !keep-alive || idle-secs < 1 || res.header("Keep-Alive").is-just then hs1
                           else hs1.set-header("Keep-Alive", "timeout=" ++ idle-secs.show)
         val reason = if res.reason.is-empty then reason-phrase(res.status) else res.reason
         val status-line = "HTTP/1.1 " ++ res.status.show ++ " " ++ reason
-        send-response(r.sock, method, version, status-line, res-headers, res)
+        match res.upgrade
+          Just(on-upgrade) | upgrading ->
+            // switch protocols: the connection now belongs to `on-upgrade` (a `1xx` response has no body)
+            r.sock.write-all(head-text(status-line, res-headers).bytes)
+            val received = match body-done()
+              Just(r3) -> r3.buf
+              Nothing -> r2.buf
+            pretend-no-div { on-upgrade(r.sock, received) }
+          _ -> send-response(r.sock, method, version, status-line, res-headers, res)
         match body-done()
+          _ | upgrading -> ()
           Just(r3) | keep-alive -> serve-connection(pretend-decreasing(r3), h, False, idle-timeout, request-timeout)
           Nothing -> linger(r.sock)   // the request body was not read: the connection is closed
           _ -> ()

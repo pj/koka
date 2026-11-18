@@ -99,6 +99,7 @@ pub import std/async/os/tls
 pub import std/async/os/ocsp
 pub import std/async/os/http2
 pub import std/async/os/http
+pub import std/async/os/websocket
 pub import std/async/os/process
 pub import std/async/os/signal
 pub import std/async/os/udp
